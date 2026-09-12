@@ -625,6 +625,9 @@
   // ---------------- 动作与表情 ----------------
 
   function playIdle() {
+    // 配置里没填待机动作（idle 为空）就别调了 —— 否则每次表情结束都会失败一次，
+    // 对"只想先跑起来"的人来说全是噪音。
+    if (!idleGroup) return;
     try { model.motion(idleGroup); debugLog("待机动作（循环）"); }
     catch (e) { fail("待机动作失败：" + e.message); }
   }

@@ -234,7 +234,10 @@ public partial class OverlayWindow : Window
         {
             type = "init",
             modelUrl = url,
-            idle = string.IsNullOrWhiteSpace(_config.Model.IdleGroup) ? "Idle" : _config.Model.IdleGroup,
+            // 没填「待机动作文件」就传空 —— 页面对空值会跳过待机动作，不会一直报"动作不存在"
+            idle = string.IsNullOrWhiteSpace(_config.Model.IdleFile)
+                ? ""
+                : (string.IsNullOrWhiteSpace(_config.Model.IdleGroup) ? "Idle" : _config.Model.IdleGroup),
             view = new { zoom = _config.View.Zoom, offsetY = _config.View.OffsetY, offsetX = _config.View.OffsetX },
             expressionDurationMs = _config.ExpressionDurationMs,
             debug = _config.DebugMode,
