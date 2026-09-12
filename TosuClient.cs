@@ -12,7 +12,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public sealed class TosuClient
 {

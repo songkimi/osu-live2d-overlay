@@ -1,6 +1,6 @@
 using System.Windows;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public partial class App : Application
 {

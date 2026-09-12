@@ -16,7 +16,7 @@
 using System.IO;
 using System.Text.Json;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public static class ModelHost
 {

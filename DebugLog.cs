@@ -9,7 +9,7 @@
 // ============================================================
 using System.IO;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public static class DebugLog
 {
@@ -26,7 +26,7 @@ public static class DebugLog
 
         try
         {
-            FilePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ComboOverlay", "debug.log");
+            FilePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "osu-live2d-overlay", "debug.log");
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(FilePath)!);
             File.WriteAllText(FilePath, $"[{DateTime.Now:HH:mm:ss}] 调试日志开始{Environment.NewLine}");
             _enabled = true;

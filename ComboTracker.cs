@@ -8,7 +8,7 @@
 //
 // 不依赖 WebSocket、不依赖界面 → 可以单独写单元测试。
 // ============================================================
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public enum ComboEventKind
 {

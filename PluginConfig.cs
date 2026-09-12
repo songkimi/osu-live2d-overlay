@@ -11,7 +11,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public sealed class PluginConfig
 {

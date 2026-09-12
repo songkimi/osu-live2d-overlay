@@ -17,7 +17,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public partial class OverlayWindow : Window
 {
@@ -169,7 +169,7 @@ public partial class OverlayWindow : Window
                     "--enable-unsafe-swiftshader --autoplay-policy=no-user-gesture-required"
             };
 
-            // 用户数据目录用 WebView2 的默认位置（exe 同级的 ComboOverlay.exe.WebView2）
+            // 用户数据目录用 WebView2 的默认位置（exe 同级的 osu-live2d-overlay.exe.WebView2）
             var environment = await CoreWebView2Environment.CreateAsync(null, null, options);
             DebugLog.Write("WebView2：环境已创建，开始 EnsureCoreWebView2Async");
             await Web.EnsureCoreWebView2Async(environment);
@@ -188,7 +188,7 @@ public partial class OverlayWindow : Window
                 DebugLog.Write($"语音目录已映射：{_voiceDir}（{_voiceEmotionNames.Count} 类情绪）");
 
             // 生成"补过动作与表情"的模型定义到临时目录，再把四个目录映射成虚拟主机
-            var patchDir = Path.Combine(Path.GetTempPath(), "ComboOverlay");
+            var patchDir = Path.Combine(Path.GetTempPath(), "osu-live2d-overlay");
             try
             {
                 var patchedPath = ModelHost.WritePatchedModel(_config, patchDir);

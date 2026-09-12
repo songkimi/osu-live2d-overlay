@@ -12,7 +12,7 @@
 // ============================================================
 using System.IO;
 
-namespace ComboOverlay;
+namespace OsuLive2dOverlay;
 
 public static class VoiceLibrary
 {
