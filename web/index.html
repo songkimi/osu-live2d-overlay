@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Live2D Overlay</title>
+<style>
+  /* 三层透明都要做到位，缺一个就会看到白底/黑底：
+     ① 这里 body 透明  ② PIXI 的 backgroundAlpha=0  ③ C# 侧 WebView2.DefaultBackgroundColor=Transparent */
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* 诊断条（常驻顶部）：只由页面自己写，不会被 C# 的状态消息覆盖 */
+  #diag {
+    position: fixed; left: 6px; top: 6px; right: 6px;
+    padding: 5px 8px; border-radius: 6px;
+    background: rgba(255, 193, 7, 0.92); color: #221c00;
+    font: 11px/1.45 Consolas, "Microsoft YaHei UI", monospace;
+    white-space: pre-wrap; pointer-events: none; display: none;
+  }
+  #diag.show { display: block; }
+
+  /* 状态行（底部）：显示 C# 发来的消息，例如连击/断连击 */
+  #status {
+    position: fixed; left: 8px; right: 8px; bottom: 8px;
+    padding: 6px 10px; border-radius: 8px;
+    background: rgba(16, 20, 24, 0.72); color: #e8eaed;
+    font: 12px/1.5 "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    text-align: center; opacity: 0; transition: opacity .25s; pointer-events: none;
+    white-space: pre-wrap;
+  }
+  #status.show { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="diag"></div>
+<div id="status"></div>
+
+<script src="vendor/pixi.min.js"></script>
+<script src="vendor/live2dcubismcore.min.js"></script>
+<script>
+  // Live2D Cubism Core 是 Live2D 官方的专有授权文件，不能随仓库一起分发，
+  // 所以 clone 下来的人本地是缺这个文件的。这里补一层兜底：
+  // 本地没取到就从官方 CDN 取 —— 必须在这一行就绪，因为下面的 pixi-live2d-display 依赖它。
+  if (!window.Live2DCubismCore) {
+    document.write('<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"><\/script>');
+  }
+</script>
+<script src="vendor/pixi-live2d-display.cubism4.min.js"></script>
+
+<script>
+  // ============================================================
+  // 插件页面：不做任何"演示"的事，完全由 C# 侧的消息驱动
+  //   C# → JS：{type:"init", modelUrl, idle, view, expressionDurationMs, debug, voice}
+  //            {type:"combo", expression, combo, step}
+  //            {type:"miss",  expression, combo}
+  //            {type:"voice", emotion, reason}        ← 语音：和上面两条完全平级、互不依赖
+  //            {type:"view",  view:{zoom,offsetY,offsetX}}
+  //            {type:"idle"} {type:"status", text, keep}
+  //   JS → C#：{type:"log", text}  {type:"ready"}  {type:"error", text}
+  // ============================================================
+  const canvas = document.getElementById("canvas");
+  const diagEl = document.getElementById("diag");
+
+  let app = null;
+  let model = null;
+  let marker = null;          // 诊断用绿方块
+  let baseScale = 1;
+  let idleGroup = "Idle";
+  let expressionDurationMs = 1500;
+  let resetTimer = null;
+  let rendererName = "?";
+
+  const view = { zoom: 1, offsetY: 0, offsetX: 0 };
+
+  function post(obj) {
+    if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(obj);
+  }
+
+  /** 调试模式（C# 侧配置项「调试模式」）：开启后才把开发期信息显示在画面上 */
+  let debugMode = false;
+
+  /** 面向玩家的提示：一定会显示（连接状态、模型加载失败之类） */
+  function notify(text, ms) { post({ type: "log", text: text }); showStatus(text, false, ms || 3000); }
+
+  /** 开发期信息：只在调试模式下显示，始终上报给 C# 侧；玩家默认看不到任何提示 */
+  function debugLog(text) { post({ type: "log", text: text }); if (debugMode) showStatus(text, false, 3000); }
+
+  /**
+   * 开发期错误：同上（默认不让玩家看到）。
+   * 原因：像"某个表情这一瞬间没播出来"这种情况，多半是游戏结算/断连击的瞬时竞态，
+   * 玩家本来察觉不到，弹出来反而像程序出错 —— 所以只在调试模式下显示。
+   */
+  function fail(text) { post({ type: "error", text: text }); if (debugMode) showStatus("⚠ " + text, false, 6000); }
+
+  /** 诊断条：常驻显示，只有页面自己能改，不会被 C# 的消息顶掉 */
+  let diagTimer = null;
+  function setDiag(text) {
+    diagEl.textContent = text;
+    diagEl.classList.toggle("show", !!text);
+  }
+
+  let statusTimer = null;
+  function showStatus(text, keep, ms) {
+    const el = document.getElementById("status");
+    if (!text) { el.classList.remove("show"); return; }
+    el.textContent = text;
+    el.classList.add("show");
+    if (statusTimer) clearTimeout(statusTimer);
+    if (!keep) statusTimer = setTimeout(() => el.classList.remove("show"), ms || 2500);
+  }
+
+  // ---------------- 语音（和表情完全解耦：表情管"演什么"，语音管"说什么"） ----------------
+
+  let voiceEnabled = false;
+  let voiceProblem = "";                       // 配错了的原因，只在诊断条里给开发者看
+  let voiceVolume = 0.8;
+  let voiceMinIntervalMs = 300;
+  const voiceMoods = {};                       // 情绪名 → { pool:[地址…], bag:[洗好的袋] }
+  const voiceAudios = {};                      // 地址 → 预加载好的 <audio>
+  let voiceLastUrl = null;                     // 上一句播的是哪个（用来避免连着重复）
+  let voiceLastDesc = "";                      // 诊断条上显示"上一句"
+  let voiceLastAt = 0;
+  let voiceCurrent = null;
+  let voiceFileProblem = "";                   // 有文件取不到时的说明（真问题，会显示出来）
+  let voiceFailNotified = false;                // 第一次播放失败已提示过（避免刷屏）
+
+  /**
+   * 建立"情绪 → 文件"表，并把文件**全部预加载**。
+   * 为什么要预加载：50 连击那一瞬间再去读文件会有一两百毫秒的延迟，
+   * 语音会晚于表情出现，听感上就是"卡了一下"。
+   */
+  function setupVoice(cfg) {
+    voiceEnabled = !!(cfg && cfg.enabled);
+    voiceProblem = (cfg && cfg.problem) || "";
+
+    if (!voiceEnabled) {
+      voiceLastDesc = voiceProblem ? "未启用（" + voiceProblem + "）" : "未启用";
+      debugLog("语音未启用" + (voiceProblem ? "：" + voiceProblem : ""));
+      return;
+    }
+
+    voiceVolume = typeof cfg.volume === "number" ? cfg.volume : 0.8;
+    voiceMinIntervalMs = cfg.minIntervalMs || 0;
+
+    (cfg.emotions || []).forEach(function (e) {
+      const urls = (e.urls || []).filter(Boolean);
+      if (!urls.length) return;
+      voiceMoods[e.name] = { pool: urls, bag: [] };
+      urls.forEach(function (u) {
+        const a = new Audio(u);
+        a.preload = "auto";                    // 先把数据取回来，播的时候才不用等
+        a.volume = voiceVolume;
+        voiceAudios[u] = a;
+      });
+    });
+
+    voiceLastDesc = "还没播过";
+    debugLog("语音就绪：" + Object.keys(voiceMoods)
+      .map(function (k) { return k + "(" + voiceMoods[k].pool.length + ")"; })
+      .join("、"));
+
+    // 再逐个取一遍，确认文件真的拿得到。
+    // ★ 为什么非要单独查一次：文件取不到和浏览器不让播，报出来的错很像，
+    //   分开查能把"路径/编码问题"和"自动播放策略问题"一次分清楚。
+    const all = [];
+    Object.keys(voiceMoods).forEach(function (k) {
+      voiceMoods[k].pool.forEach(function (u) { all.push(u); });
+    });
+    Promise.all(all.map(function (u) {
+      return fetch(u).then(function (r) { return r.ok ? "" : voiceFileName(u) + "(" + r.status + ")"; })
+                      .catch(function () { return voiceFileName(u) + "(取不到)"; });
+    })).then(function (bad) {
+      const failed = bad.filter(Boolean);
+      debugLog("语音文件检查：" + (all.length - failed.length) + "/" + all.length + " 可取到" +
+               (failed.length ? "；失败：" + failed.join("、") : ""));
+      voiceFileProblem = failed.length ? ("有 " + failed.length + " 个文件取不到：" + failed.join("、")) : "";
+      updateDiag();
+    });
+  }
+
+  /**
+   * 挑一句话。用"洗牌袋"而不是每次直接随机：
+   *   直接 Math.random() 有个反直觉的地方 —— 只有 2 句时，连续两次挑到同一句的概率是 50%，
+   *   听感上就是"随机坏了，怎么老说同一句"。
+   *   洗牌袋 = 把这一情绪的文件打乱、依次取，取完再打乱。既随机，又保证一轮之内不重复。
+   */
+  function pickVoiceUrl(emotion) {
+    const m = voiceMoods[emotion];
+    if (!m) return null;
+
+    if (m.bag.length === 0) {
+      m.bag = m.pool.slice();
+      for (let i = m.bag.length - 1; i > 0; i--) {          // Fisher–Yates 洗牌
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = m.bag[i]; m.bag[i] = m.bag[j]; m.bag[j] = t;
+      }
+      // 这一袋里第一个要播的（从末尾取）如果恰好是上一句，就跟别的位置换一下
+      if (m.bag.length > 1 && m.bag[m.bag.length - 1] === voiceLastUrl) {
+        const j = Math.floor(Math.random() * m.bag.length);
+        const t = m.bag[m.bag.length - 1];
+        m.bag[m.bag.length - 1] = m.bag[j];
+        m.bag[j] = t;
+      }
+    }
+    return m.bag.pop();
+  }
+
+  /** 地址 → 文件名（只为日志好读） */
+  function voiceFileName(url) {
+    const s = String(url).split("?")[0].split("/").pop() || "";
+    try { return decodeURIComponent(s); } catch (e) { return s; }
+  }
+
+  function playVoice(emotion, reason) {
+    if (!voiceEnabled) return;
+
+    const url = pickVoiceUrl(emotion);
+    if (!url) { debugLog("没有这类情绪的语音：" + emotion); return; }
+
+    const now = performance.now();
+    if (now - voiceLastAt < voiceMinIntervalMs) {
+      debugLog("间隔太短，跳过一句：" + emotion);
+      return;
+    }
+    voiceLastAt = now;
+
+    // 打断策略：新的一句直接掐掉上一句，嘴也跟着闭上。
+    // 断连击的语音必须立刻出声，等上一句"说完"就晚了（后面还要接着打歌）。
+    if (voiceCurrent) {
+      try { voiceCurrent.pause(); voiceCurrent.currentTime = 0; } catch (e) { /* 忽略 */ }
+      stopMouth();
+    }
+
+    const audio = voiceAudios[url] || (voiceAudios[url] = new Audio(url));
+    audio.volume = voiceVolume;
+    voiceCurrent = audio;
+    voiceLastUrl = url;
+    voiceLastDesc = emotion + "/" + voiceFileName(url);
+
+    const p = audio.play();
+    if (p && p.catch) {
+      p.then(function () {
+         debugLog("语音播放：" + voiceLastDesc + (reason ? "（" + reason + "）" : ""));
+         startMouth(audio);          // 一边出声一边张嘴
+       })
+       .catch(function (err) {
+         // 走到这里基本只有一个原因：浏览器不允许"没有用户手势"的自动播放。
+         // 插件已经用 --autoplay-policy=no-user-gesture-required 处理过了，真出现就是环境问题。
+         const detail = "语音没能播放：" + err.name + " —— " + voiceLastDesc +
+                        "（浏览器拒绝了自动播放）";
+         // 整个语音功能不出声属于"不修就没法用"，所以第一次一定提示；
+         // 之后归入开发期信息，只在调试模式下显示，避免一直刷屏。
+         if (!voiceFailNotified) {
+           voiceFailNotified = true;
+           notify(detail + "｜之后不再重复提示", 6000);
+         }
+         fail(detail);
+       });
+    }
+  }
+
+  /** 诊断条里的语音那行 */
+  function voiceInfo() {
+    if (!voiceEnabled) return voiceLastDesc || "未启用";
+    const parts = Object.keys(voiceMoods).map(function (k) {
+      return k + "(" + voiceMoods[k].pool.length + ")";
+    });
+    return parts.join("、") + "｜上一句 " + voiceLastDesc +
+           (voiceFileProblem ? "\n  ⚠ " + voiceFileProblem : "");
+  }
+
+  // ---------------- 口型（说话时张嘴） ----------------
+  //
+  // 让"说话"看起来像说话：音频在播的这段时间里，驱动模型的口型参数开合。
+  //
+  // 时机（这点必须对，否则白设）：库的每帧更新顺序是
+  //   动作 → 表情 → 眨眼 → 目光 → 物理 → 姿势 → ★此处 → coreModel.update()
+  // 所以要在 beforeModelUpdate 里写参数 —— 此时别人的值都已写完、还没提交，
+  // 我们写的值会生效，也不会被动作或物理覆盖。
+
+  let mouthEnabled = false;
+  let mouthParamId = "";
+  let mouthStrength = 1;
+  let mouthUntil = 0;          // 说到什么时刻为止
+  let mouthTarget = 0;         // 当前目标开合度
+  let mouthNext = 0;           // 下次换目标的时刻
+  let mouthValue = 0;          // 平滑后的实际值
+  let mouthActive = false;     // 是否正在"接管"嘴巴（不接管时一帧都不碰这个参数）
+
+  // 候选参数名：Cubism 规范里口型参数就叫 ParamMouthOpenY，个别模型会自己改名
+  const MOUTH_PARAM_CANDIDATES = ["ParamMouthOpenY", "ParamMouthOpen", "MouthOpenY", "ParamMouthY"];
+
+  function coreModel() {
+    return model && model.internalModel ? model.internalModel.coreModel : null;
+  }
+
+  /**
+   * 参数在不在模型里。
+   * ★ 只能拿名字一个个问，不能"列出所有参数再筛"：查过这个库的源码，
+   *   CubismModel 有 getParameterCount / getParameterIndex / setParameterValueById，
+   *   但**没有** getParameterId(index) —— 枚举不出来（getParameterIds() 属于眨眼控制器，不是模型的）。
+   */
+  function parameterExists(cm, id) {
+    try { return typeof cm.getParameterIndex === "function" && cm.getParameterIndex(id) >= 0; }
+    catch (e) { return false; }
+  }
+
+  function parameterCount(cm) {
+    try { return typeof cm.getParameterCount === "function" ? cm.getParameterCount() : 0; }
+    catch (e) { return 0; }
+  }
+
+  /** 找口型参数：配置里指定的优先，否则按常见命名挨个问 */
+  function setupMouth(cfg) {
+    mouthEnabled = !!(cfg && cfg.enabled);
+    if (!mouthEnabled) { debugLog("口型未启用"); return; }
+
+    mouthStrength = typeof cfg.strength === "number" ? cfg.strength : 1;
+
+    const cm = coreModel();
+    if (!cm) { mouthEnabled = false; debugLog("拿不到模型，口型不启用"); return; }
+
+    const wanted = (cfg.parameter || "").trim();
+
+    if (wanted) {
+      mouthParamId = wanted;
+      if (!parameterExists(cm, wanted))
+        debugLog("配置的口型参数「" + wanted + "」不在模型里，设了也不会有反应 —— 检查有没有打错");
+    } else {
+      mouthParamId = MOUTH_PARAM_CANDIDATES.find(function (id) { return parameterExists(cm, id); }) || "";
+      if (!mouthParamId) {
+        // 这个模型就是没有口型参数 → 安静地不做，别打扰（可在配置里手动指定「口型.参数」）
+        mouthEnabled = false;
+        debugLog("模型里没有找到口型参数，说话时不会张嘴（该模型共 " + parameterCount(cm) + " 个参数）");
+        return;
+      }
+    }
+
+    debugLog("口型参数 = " + mouthParamId + "，幅度 " + mouthStrength);
+    model.internalModel.on("beforeModelUpdate", mouthTick);
+  }
+
+  /** 开始"说话"：按音频时长决定说到什么时候 */
+  function startMouth(audio) {
+    if (!mouthEnabled) return;
+    const seconds = (audio && isFinite(audio.duration) && audio.duration > 0) ? audio.duration : 1.2;
+    mouthUntil = performance.now() + seconds * 1000 + 80;   // 留一点尾巴，别把最后一个字吃掉
+    mouthNext = 0;                                          // 立刻开始动
+    mouthActive = true;
+  }
+
+  /** 收口：不再延长，让 mouthTick 把嘴平滑闭上后自己收工 */
+  function stopMouth() {
+    mouthUntil = 0;
+  }
+
+  /** 每帧调一次：开 → 闭 → 开 …… 像说话，而不是机械的正弦波 */
+  function mouthTick() {
+    if (!mouthEnabled || !mouthParamId || !mouthActive) return;
+    const cm = coreModel();
+    if (!cm) return;
+
+    const now = performance.now();
+
+    if (now > mouthUntil) {
+      mouthTarget = 0;
+    } else if (now > mouthNext) {
+      // 张嘴（久一点）和闭嘴（短一点）交替，读起来才像音节
+      mouthTarget = mouthTarget > 0.15 ? 0.05 : (0.45 + Math.random() * 0.55);
+      mouthNext = now + (mouthTarget > 0.15 ? 70 + Math.random() * 90 : 40 + Math.random() * 70);
+    }
+
+    mouthValue += (mouthTarget - mouthValue) * 0.35;        // 平滑一下，避免每帧跳变
+    try { cm.setParameterValueById(mouthParamId, mouthValue * mouthStrength, 1); }
+    catch (e) { /* 参数不存在等情况：忽略，不影响别的功能 */ }
+
+    // 说完了、嘴也闭合到位 → 收工。
+    // ★ 这一步很重要：如果不"收工"而是继续每帧设值，就会把模型待机动作里
+    //   本来就有的嘴部动画一路按成 0，角色会显得嘴僵住。
+    if (now > mouthUntil && mouthValue < 0.02) {
+      mouthActive = false;
+      debugLog("口型结束，参数交还给动作");
+    }
+  }
+
+  // ---------------- 初始化 ----------------
+
+  window.chrome.webview.addEventListener("message", async (event) => {
+    const msg = event.data;
+    if (!msg || !msg.type) return;
+
+    switch (msg.type) {
+      case "init":
+        try {
+          idleGroup = msg.idle || "Idle";
+          expressionDurationMs = msg.expressionDurationMs || 1500;
+          debugMode = msg.debug === true;
+          if (msg.view) Object.assign(view, msg.view);
+          setupVoice(msg.voice);
+          await loadModel(msg.modelUrl);
+          setupMouth(msg.mouth);      // 要在模型加载完之后：口型参数是从模型里找出来的
+        } catch (e) {
+          fail("模型加载失败：" + e.message);
+          setDiag("加载失败：" + e.message);     // 加载失败是真问题 → 诊断条常驻显示
+        }
+        break;
+
+      case "combo":
+        debugLog("收到 combo 消息：" + msg.expression);
+        requestExpression(msg.expression);
+        break;
+
+      case "miss":
+        debugLog("收到 miss 消息：" + msg.expression);
+        requestExpression(msg.expression);
+        break;
+
+      // 语音：只认情绪，不认表情 —— 这就是"语音与动作解耦"在协议上的样子
+      case "voice":
+        playVoice(msg.emotion, msg.reason);
+        break;
+
+      case "view":
+        if (msg.view) { Object.assign(view, msg.view); applyView(); updateDiag(); }
+        break;
+
+      case "idle":
+        playIdle();
+        break;
+
+      // 目光跟随鼠标：坐标由 C# 侧提供（窗口点击穿透，WebView2 收不到鼠标事件）
+      case "cursor":
+        if (model && typeof msg.x === "number") model.focus(msg.x, msg.y);
+        break;
+
+      case "status":
+        showStatus(msg.text, msg.keep === true);
+        break;
+    }
+  });
+
+  /** 画布尺寸：用 clientWidth（CSS 实际尺寸），并保证不为 0 */
+  function readCanvasSize() {
+    const w = Math.max(1, Math.round(canvas.clientWidth || window.innerWidth || 0));
+    const h = Math.max(1, Math.round(canvas.clientHeight || window.innerHeight || 0));
+    canvas.width = w;
+    canvas.height = h;
+    return { w: w, h: h };
+  }
+
+  /** 等到画布有真实尺寸再开始（初始化时窗口可能还没布局完成，尺寸会是 0） */
+  async function waitForCanvasSize() {
+    for (let i = 0; i < 50; i++) {                 // 最多等 5 秒
+      const s = readCanvasSize();
+      if (s.w > 50 && s.h > 50) return s;
+      setDiag("等待画布尺寸 …（当前 " + s.w + "×" + s.h + "）");
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return readCanvasSize();
+  }
+
+  async function loadModel(url) {
+    // Cubism Core 不随仓库分发（授权），本地缺文件时靠上面那层 CDN 兜底。
+    // 两边都没取到的话，这里给一句能看懂的提示，而不是让它静静地加载失败。
+    if (!window.Live2DCubismCore) {
+      fail("缺少 Live2D Cubism Core：请把 live2dcubismcore.min.js 放到 web/vendor/ 下" +
+           "（本地和官方 CDN 都没取到）");
+      setDiag("缺少 live2dcubismcore.min.js —— 见 README「需要你自己准备的东西」");
+      return;
+    }
+
+    const size = await waitForCanvasSize();
+
+    app = new PIXI.Application({
+      view: canvas,
+      width: size.w,
+      height: size.h,
+      backgroundAlpha: 0,      // ★ 透明背景的关键之一
+      antialias: true,
+      autoStart: true
+    });
+
+    rendererName = app.renderer.name || (String(app.renderer.type) === "1" ? "webgl" : "canvas");
+
+    model = await PIXI.live2d.Live2DModel.from(url);
+    app.stage.addChild(model);
+
+    recomputeBaseScale();
+    applyView();
+    playIdle();
+    updateDiag();
+
+    // 尺寸变化时自动纠正
+    new ResizeObserver(() => {
+      if (!app) return;
+      const s = readCanvasSize();
+      app.renderer.resize(s.w, s.h);
+      applyView();
+      updateDiag();
+    }).observe(document.body);
+
+    // 兜底自愈：布局尺寸晚一点才稳定时，逐帧检查画布尺寸，变了就重算一次
+    let lastW = app.renderer.width, lastH = app.renderer.height, stableFrames = 0;
+    app.ticker.add(() => {
+      if (!model) return;
+      if (app.renderer.width !== lastW || app.renderer.height !== lastH) {
+        lastW = app.renderer.width; lastH = app.renderer.height;
+        applyView();
+        updateDiag();
+        stableFrames = 0;
+      } else if (stableFrames < 3) {
+        // 前几帧再补一次，确保首帧尺寸就是对的
+        stableFrames++;
+        applyView();
+        updateDiag();
+      }
+    });
+
+    post({ type: "ready" });
+  }
+
+  function recomputeBaseScale() {
+    if (!model || !app) return;
+    const m = modelSize();
+    baseScale = Math.min(app.renderer.width / m.w, app.renderer.height / m.h);
+  }
+
+  /**
+   * 取模型的**原始画布尺寸**。
+   * 注意：不能用 model.width —— PIXI 的 width 是"含缩放"的属性（scale × 局部尺寸），
+   * 模型一旦被缩放过，再读它就是缩放后的值，用来算适配比例会得出错误结果。
+   * internalModel.width/height 才是模型自己的画布尺寸（不受缩放影响）。
+   */
+  function modelSize() {
+    const im = model && model.internalModel;
+    return {
+      w: (im && im.width) || model.width || 1,
+      h: (im && im.height) || model.height || 1
+    };
+  }
+
+  /** 检查 WebGL 到底能不能用 —— Live2D 必须有 WebGL 才能画出来 */
+  function webglInfo() {
+    try {
+      const c = document.createElement("canvas");
+      const gl = c.getContext("webgl2") || c.getContext("webgl");
+      if (!gl) return "不可用 ✗";
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      const name = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "可用";
+      return String(name).slice(0, 46);
+    } catch (e) {
+      return "异常：" + e.message;
+    }
+  }
+
+  /** 诊断条内容：出问题时这一屏文字就能定位到具体是哪一层的问题 */
+  function updateDiag() {
+    if (!app || !model) return;
+
+    const m = modelSize();
+    const info = modelPatchInfo();
+    const s = baseScale * view.zoom;
+    const left = Math.round(model.x), top = Math.round(model.y);
+    const right = Math.round(left + m.w * s);
+    const bottom = Math.round(top + m.h * s);
+    const visible = bottom > 0 && top < app.renderer.height && right > 0 && left < app.renderer.width;
+
+    const text =
+      "画布 " + app.renderer.width + "×" + app.renderer.height + "｜渲染器 " + rendererName +
+      "｜模型(原始) " + Math.round(m.w) + "×" + Math.round(m.h) +
+      "\n缩放 " + view.zoom.toFixed(2) + "（基准 " + baseScale.toFixed(4) + "）｜上下 " + view.offsetY.toFixed(2) +
+      "｜模型范围 (" + left + "," + top + ")→(" + right + "," + bottom + ")｜在画面内 = " + visible +
+      "\n补丁检查：动作组 [" + info.groups.join("、") + "]｜表情 " + info.defs.length + " 个" +
+      (info.defs.length ? "：" + info.defs.slice(0, 4).join("、") + (info.defs.length > 4 ? "…" : "")
+                        : " ← ⚠ 补丁没生效（应为 17 个）") +
+      "\n语音：" + voiceInfo() +
+      "\nWebGL：" + webglInfo();
+
+    // 模型看不见、或者补丁没生效时，诊断条一直留着；一切正常时 10 秒后自动消失
+    if (!visible) {
+      drawMarker();
+      setDiag(text + "\n★ 左上角画了一个绿方块：看得到它 → 渲染正常、是模型位置问题；看不到 → 渲染层有问题");
+    } else if (info.defs.length === 0) {
+      removeMarker();
+      setDiag(text + "\n★ 补丁没生效：模型里没有注册任何表情（虚拟主机映射或请求拦截有问题）");
+    } else {
+      removeMarker();
+      setDiag(text);
+      if (diagTimer) clearTimeout(diagTimer);
+      diagTimer = setTimeout(() => setDiag(""), 10000);
+    }
+  }
+
+  function drawMarker() {
+    if (marker || !app) return;
+    marker = new PIXI.Graphics();
+    marker.beginFill(0x00ff00, 0.9).drawRect(20, 20, 80, 80).endFill();
+    app.stage.addChild(marker);
+  }
+
+  function removeMarker() {
+    if (!marker || !app) return;
+    app.stage.removeChild(marker);
+    marker = null;
+  }
+
+  // ---------------- 视图（位置与大小由配置控制） ----------------
+
+  function applyView() {
+    if (!model || !app) return;
+    const w = app.renderer.width, h = app.renderer.height;
+
+    // 每次都按"当前"的模型原始尺寸与画布尺寸重新算适配比例 —— 永不过期、自动纠正
+    recomputeBaseScale();
+
+    const m = modelSize();
+    const s = baseScale * view.zoom;
+
+    model.scale.set(s, s);
+    model.x = w / 2 - (m.w * s) / 2 + view.offsetX * w;
+    model.y = h - m.h * s + view.offsetY * h;
+  }
+
+  // ---------------- 动作与表情 ----------------
+
+  function playIdle() {
+    try { model.motion(idleGroup); debugLog("待机动作（循环）"); }
+    catch (e) { fail("待机动作失败：" + e.message); }
+  }
+
+  /** 模型里实际注册了什么（用来判断"打补丁"到底成没成功） */
+  function modelPatchInfo() {
+    const mm = model.internalModel.motionManager;
+    const groups = Object.keys(mm.definitions || {}).map(k => k + "(" + (mm.definitions[k] || []).length + ")");
+    const em = mm.expressionManager;
+    const defs = em && em.definitions ? em.definitions.map(d => d.Name || d.name) : [];
+    return { groups: groups, defs: defs };
+  }
+
+  function expressionManager() {
+    return model && model.internalModel && model.internalModel.motionManager
+      ? model.internalModel.motionManager.expressionManager
+      : null;
+  }
+
+  function currentExpressionName(em) {
+    const cur = em && em.currentExpression;
+    return cur ? (cur.Name || cur.name) : "";
+  }
+
+  /**
+   * 到点把表情收回、回到待机。
+   * ★ 所有"表情开始显示"的路径都必须调它 —— 漏掉一条，计时器就会拿着旧表情的时间
+   *   去把新表情提前收回（表情看起来就是"闪一下没了"）。
+   */
+  function armResetTimer() {
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(function () {
+      const em = expressionManager();
+      if (em && typeof em.resetExpression === "function") em.resetExpression();
+      playIdle();
+    }, expressionDurationMs);
+  }
+
+  // 表情请求排队：同一时刻只让一个 expression 调用在"飞"。
+  // ★ 老手坑：pixi-live2d-display 的 expressionManager 被同时调两次会互相打架
+  //   （前一个还在加载文件，后一个就直接返回 false），表现出来就是"连续失误时表情时有时无"。
+  let expressionBusy = false;
+  let pendingExpression = null;
+
+  /**
+   * 请求播放一个表情，三种情况分开处理：
+   *   ① 这个表情已经在显示 → 不重播，只把"回待机的时刻"往后推（频繁失误时正是这种情况）
+   *   ② 上一个请求还在飞   → 只记住最新的那一个，等它结束再播（不打架、不堆积）
+   *   ③ 空闲              → 直接播
+   */
+  function requestExpression(name) {
+    if (!name) return;
+
+    const em = expressionManager();
+
+    if (!expressionBusy && currentExpressionName(em) === name) {
+      armResetTimer();
+      debugLog("表情「" + name + "」已在显示，延长 " + expressionDurationMs + " 毫秒");
+      return;
+    }
+
+    if (expressionBusy) { pendingExpression = name; return; }
+
+    runExpressionQueue(name);
+  }
+
+  async function runExpressionQueue(name) {
+    expressionBusy = true;
+    try {
+      while (name) {
+        pendingExpression = null;
+        await playExpression(name);
+        name = pendingExpression;      // 排队期间来的新请求：只取最后一个
+      }
+    } finally {
+      expressionBusy = false;
+    }
+  }
+
+  async function playExpression(name) {
+    if (!model || !name) { fail("表情名为空（检查 config.json）"); return; }
+
+    const info = modelPatchInfo();
+    const em = expressionManager();
+
+    try {
+      // ★ model.expression() 返回 Promise<boolean>，但 false 有三种完全不同的原因：
+      //   ① 名字不存在 ② 这个表情已经就是当前表情（无害）③ 文件加载失败 / 上一次还在加载中（竞态）
+      if (await model.expression(name)) return onExpressionStarted(name);
+
+      // ② 已经在显示中 → 当成成功：不重播，只把显示时间续上
+      if (currentExpressionName(em) === name) {
+        armResetTimer();
+        debugLog("表情「" + name + "」已在显示，延长 " + expressionDurationMs + " 毫秒");
+        return;
+      }
+
+      // ③ 竞态：上一次可能还在加载，稍等再试一次
+      await new Promise(r => setTimeout(r, 150));
+      if (await model.expression(name)) return onExpressionStarted(name);
+
+      // 到这里就是真的失败：把该表情的文件也报出来，方便判断是"路径取不到"还是"文件内容有问题"
+      const def = em && em.definitions
+        ? em.definitions.find(d => (d.Name || d.name) === name)
+        : null;
+      const file = def ? (def.File || def.file) : "（找不到该表情的定义）";
+
+      fail("表情「" + name + "」没能播放。\n" +
+           "对应文件：" + file + "\n" +
+           "已注册 " + info.defs.length + " 个：" + info.defs.join("、"));
+    } catch (e) {
+      fail("表情播放异常：" + name + " → " + e.message);
+    }
+  }
+
+  /** 表情开始播放后：安排到点自动回到待机（提示只在调试模式下显示） */
+  function onExpressionStarted(name) {
+    debugLog("播放表情：" + name);
+    armResetTimer();
+  }
+
+  window.addEventListener("resize", () => {
+    if (!app) return;
+    const s = readCanvasSize();
+    app.renderer.resize(s.w, s.h);
+    recomputeBaseScale();
+    applyView();
+    updateDiag();
+  });
+</script>
+</body>
+</html>
