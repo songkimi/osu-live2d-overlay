@@ -94,7 +94,8 @@ public partial class OverlayWindow : Window
         var exeDir = AppContext.BaseDirectory;
         _config = PluginConfig.Load(Path.Combine(exeDir, "config.json"));
         _webDir = Path.Combine(exeDir, "web");
-        _tracker = new ComboTracker(_config.ComboTriggers.Select(t => t.Threshold));
+        _tracker = new ComboTracker(_config.ComboTriggers.Select(t => t.Threshold),
+                            Array.Empty<ComboRange>());
 
         DebugLog.Start(_config.DebugMode);
 
@@ -369,8 +370,16 @@ public partial class OverlayWindow : Window
             return;
         }
 
-        // 合成一个 Break 事件，走正式发送路径
-        var evt = new ComboEvent(ComboEventKind.Break, 0, previous, 0, 0, previous);
+        // 合成一个 Break 事件，走正式发送路径。
+        // RangeIndex 传 -1：这是测试键造出来的假事件，不代表真实区间。
+        var evt = new ComboEvent(
+            Kind: ComboEventKind.Break,
+            Combo: 0,
+            PreviousCombo: previous,
+            Level: 0,
+            Threshold: 0,
+            MaxCombo: previous,
+            RangeIndex: -1);
         DispatchTrigger(evt, expression, emotion, $"[测试] 断连击（断之前 {previous} 连击）");
     }
 
@@ -430,34 +439,36 @@ public partial class OverlayWindow : Window
 
     private void OnComboUpdated(int combo, int maxCombo)
     {
-        var triggered = _tracker.Update(combo, maxCombo);
-        if (triggered is not { } evt) return;
-
-        if (!_pageReady)
+        var events = _tracker.Update(combo, maxCombo);
+        if (events.Count == 0) return;
+        foreach (var evt in events)
         {
-            // 页面还没就绪就丢消息，并在界面上说清楚（否则会表现成"完全没反应"）
-            ShowStatus("页面未就绪，忽略一次触发：" + evt.Kind, autoHide: true);
-            return;
-        }
+            if (!_pageReady)
+            {
+                // 页面还没就绪就丢消息，并在界面上说清楚（否则会表现成"完全没反应"）
+                ShowStatus("页面未就绪，忽略一次触发：" + evt.Kind, autoHide: true);
+                return;
+            }
 
-        if (evt.Kind == ComboEventKind.Step)
-        {
-            var trigger = _config.ComboTriggers.FirstOrDefault(t => t.Threshold == evt.Threshold);
-            DispatchTrigger(evt, trigger?.Expression ?? "", trigger?.VoiceEmotion ?? "",
-                            $"{evt.Combo} 连击（跨过 {evt.Threshold}）");
-            return;
-        }
+            if (evt.Kind == ComboEventKind.Step)
+            {
+                var trigger = _config.ComboTriggers.FirstOrDefault(t => t.Threshold == evt.Threshold);
+                DispatchTrigger(evt, trigger?.Expression ?? "", trigger?.VoiceEmotion ?? "",
+                                $"{evt.Combo} 连击（跨过 {evt.Threshold}）");
+                return;
+            }
 
-        // 断连击：先看"断之前手里有多少连击"，再决定理不理他
-        var (expression, emotion) = ResolveMiss(evt.PreviousCombo);
-        if (expression.Length == 0 && emotion.Length == 0)
-        {
-            DebugLog.Write($"断连击（断之前 {evt.PreviousCombo} 连击）→ 还没到门槛 " +
-                           $"{_config.Miss.SmallThreshold}，不反应");
-            return;
-        }
+            // 断连击：先看"断之前手里有多少连击"，再决定理不理他
+            var (expression, emotion) = ResolveMiss(evt.PreviousCombo);
+            if (expression.Length == 0 && emotion.Length == 0)
+            {
+                DebugLog.Write($"断连击（断之前 {evt.PreviousCombo} 连击）→ 还没到门槛 " +
+                               $"{_config.Miss.SmallThreshold}，不反应");
+                return;
+            }
 
-        DispatchTrigger(evt, expression, emotion, $"断连击（断之前 {evt.PreviousCombo} 连击）");
+            DispatchTrigger(evt, expression, emotion, $"断连击（断之前 {evt.PreviousCombo} 连击）");
+        }
     }
 
     /// <summary>

@@ -62,50 +62,65 @@ public static class ModelHost
         if (fileRefs.TryGetValue("Moc", out var moc) && moc is JsonElement me && me.ValueKind == JsonValueKind.String)
             fileRefs["Moc"] = Absolute(me.GetString()!);
 
-        if (fileRefs.TryGetValue("Textures", out var tex) && tex is JsonElement te && te.ValueKind == JsonValueKind.Array)
-            fileRefs["Textures"] = te.EnumerateArray()
-                .Where(x => x.ValueKind == JsonValueKind.String)
-                .Select(x => (object?)Absolute(x.GetString()!))
+        if (fileRefs.TryGetValue("Textures", out var tex) && tex is List<object?> textures)
+            fileRefs["Textures"] = textures
+                .Select(x => x is JsonElement te && te.ValueKind == JsonValueKind.String
+                    ? (object?)Absolute(te.GetString()!)
+                    : x)
                 .ToList();
 
         foreach (var key in new[] { "Physics", "DisplayInfo", "Pose", "UserData" })
             if (fileRefs.TryGetValue(key, out var v) && v is JsonElement e && e.ValueKind == JsonValueKind.String)
                 fileRefs[key] = Absolute(e.GetString()!);
 
-        // ② 同一层目录下的其它引用（如果有）
-        foreach (var key in new[] { "Motions", "Expressions" })
-            fileRefs.Remove(key);   // 原始文件里通常没有；避免残留旧值
-
-        // ③ 补上待机动作
+        // ② 补上待机动作。
+        //    ★ 必须**追加**到原有的动作组里，不能整个替换 ——
+        //      Cubism 官方标准模型（SDK 示例那一类）自带 Idle/Tap/Flick/Shake 一整套动作，
+        //      直接替换等于把人家模型的动作全删了。（这里曾经就是这么错的，注释还写着
+        //      "原始文件里通常没有"——实测：官方模型全都有。）
         if (!string.IsNullOrWhiteSpace(model.IdleFile))
         {
             var group = string.IsNullOrWhiteSpace(model.IdleGroup) ? "Idle" : model.IdleGroup;
-            fileRefs["Motions"] = new Dictionary<string, object?>
+            var idle = new List<object?>
             {
-                [group] = new List<object?>
+                new Dictionary<string, object?>
                 {
-                    new Dictionary<string, object?>
-                    {
-                        ["File"] = Absolute(model.IdleFile),
-                        ["FadeInTime"] = 0.5,
-                        ["FadeOutTime"] = 0.5
-                    }
+                    ["File"] = Absolute(model.IdleFile),
+                    ["FadeInTime"] = 0.5,
+                    ["FadeOutTime"] = 0.5
                 }
             };
+
+            if (fileRefs.TryGetValue("Motions", out var existingMotions)
+                && existingMotions is Dictionary<string, object?> motions)
+                motions[group] = idle;                 // 同名组以配置里的为准
+            else
+                fileRefs["Motions"] = new Dictionary<string, object?> { [group] = idle };
         }
 
-        // ④ 补上配置里的表情（名字由用户在 config.json 里定）
-        if (model.Expressions.Count > 0)
+        // ③ 补上配置里的表情：同样**追加**到原有的表情列表里。
+        //    同名的以配置里的为准（用户显式配的应该生效），名字不同的全部保留。
+        var expressions = fileRefs.TryGetValue("Expressions", out var rawExpressions)
+                          && rawExpressions is List<object?> expressionList
+            ? expressionList
+            : new List<object?>();
+
+        foreach (var item in model.Expressions)
         {
-            fileRefs["Expressions"] = model.Expressions
-                .Where(x => !string.IsNullOrWhiteSpace(x.Name) && !string.IsNullOrWhiteSpace(x.File))
-                .Select(x => (object?)new Dictionary<string, object?>
-                {
-                    ["Name"] = x.Name,
-                    ["File"] = Absolute(x.File)
-                })
-                .ToList();
+            if (string.IsNullOrWhiteSpace(item.Name) || string.IsNullOrWhiteSpace(item.File)) continue;
+
+            expressions.RemoveAll(o => o is Dictionary<string, object?> d
+                                       && d.TryGetValue("Name", out var n)
+                                       && n as string == item.Name);
+
+            expressions.Add(new Dictionary<string, object?>
+            {
+                ["Name"] = item.Name,
+                ["File"] = Absolute(item.File)
+            });
         }
+
+        if (expressions.Count > 0) fileRefs["Expressions"] = expressions;
 
         root["FileReferences"] = fileRefs;
 
@@ -133,16 +148,23 @@ public static class ModelHost
         return string.Join("/", normalized.Split('/').Select(Uri.EscapeDataString));
     }
 
-    /// <summary>JsonElement → 可写字典（只处理我们需要的层级：对象/数组/标量）</summary>
+    /// <summary>
+    /// JsonElement → 可写的普通对象：对象变字典、数组变列表、标量保持原样。
+    /// 数组必须转成 List —— 否则「原有的表情要不要保留、配置的表情怎么追加」这类
+    /// 合并逻辑根本没法写（JsonElement 是只读的）。
+    /// </summary>
     private static Dictionary<string, object?> ToDictionary(JsonElement element)
     {
         var dict = new Dictionary<string, object?>();
         foreach (var p in element.EnumerateObject())
-        {
-            dict[p.Name] = p.Value.ValueKind == JsonValueKind.Object
-                ? ToDictionary(p.Value)
-                : JsonSerializer.Deserialize<object>(p.Value.GetRawText());
-        }
+            dict[p.Name] = ToValue(p.Value);
         return dict;
     }
+
+    private static object? ToValue(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Object => ToDictionary(element),
+        JsonValueKind.Array => element.EnumerateArray().Select(ToValue).ToList(),
+        _ => JsonSerializer.Deserialize<object>(element.GetRawText())
+    };
 }
