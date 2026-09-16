@@ -69,6 +69,7 @@
   let idleGroup = "Idle";
   let expressionDurationMs = 1500;
   let resetTimer = null;
+  let steadyExpression = "";   // 当前常态表情的标识（由区间决定，一直保持）
   let rendererName = "?";
 
   const view = { zoom: 1, offsetY: 0, offsetX: 0 };
@@ -161,7 +162,7 @@
       .join("、"));
 
     // 再逐个取一遍，确认文件真的拿得到。
-    // ★ 为什么非要单独查一次：文件取不到和浏览器不让播，报出来的错很像，
+    // 为什么非要单独查一次：文件取不到和浏览器不让播，报出来的错很像，
     //   分开查能把"路径/编码问题"和"自动播放策略问题"一次分清楚。
     const all = [];
     Object.keys(voiceMoods).forEach(function (k) {
@@ -275,7 +276,7 @@
   // 让"说话"看起来像说话：音频在播的这段时间里，驱动模型的口型参数开合。
   //
   // 时机（这点必须对，否则白设）：库的每帧更新顺序是
-  //   动作 → 表情 → 眨眼 → 目光 → 物理 → 姿势 → ★此处 → coreModel.update()
+  //   动作 → 表情 → 眨眼 → 目光 → 物理 → 姿势 → 此处 → coreModel.update()
   // 所以要在 beforeModelUpdate 里写参数 —— 此时别人的值都已写完、还没提交，
   // 我们写的值会生效，也不会被动作或物理覆盖。
 
@@ -297,7 +298,7 @@
 
   /**
    * 参数在不在模型里。
-   * ★ 只能拿名字一个个问，不能"列出所有参数再筛"：查过这个库的源码，
+   * 只能拿名字一个个问，不能"列出所有参数再筛"：查过这个库的源码，
    *   CubismModel 有 getParameterCount / getParameterIndex / setParameterValueById，
    *   但**没有** getParameterId(index) —— 枚举不出来（getParameterIds() 属于眨眼控制器，不是模型的）。
    */
@@ -376,7 +377,7 @@
     catch (e) { /* 参数不存在等情况：忽略，不影响别的功能 */ }
 
     // 说完了、嘴也闭合到位 → 收工。
-    // ★ 这一步很重要：如果不"收工"而是继续每帧设值，就会把模型待机动作里
+    // 这一步很重要：如果不"收工"而是继续每帧设值，就会把模型待机动作里
     //   本来就有的嘴部动画一路按成 0，角色会显得嘴僵住。
     if (now > mouthUntil && mouthValue < 0.02) {
       mouthActive = false;
@@ -416,6 +417,16 @@
         requestExpression(msg.expression);
         break;
 
+      // 区间变化 → 换常态表情。它不撤销，会一直保持到区间再变；
+      // 瞬时表情到期时也会回落到它（见 armResetTimer）。
+      case "steady":
+        setSteady(msg.expression);
+        break;
+
+      // 动作：和表情是两条独立的消息，页面这边各播各的
+      case "motion":
+        playMotion(msg.action);
+        break;
       // 语音：只认情绪，不认表情 —— 这就是"语音与动作解耦"在协议上的样子
       case "voice":
         playVoice(msg.emotion, msg.reason);
@@ -476,7 +487,7 @@
       view: canvas,
       width: size.w,
       height: size.h,
-      backgroundAlpha: 0,      // ★ 透明背景的关键之一
+      backgroundAlpha: 0,      // 透明背景的关键之一
       antialias: true,
       autoStart: true
     });
@@ -580,10 +591,10 @@
     // 模型看不见、或者补丁没生效时，诊断条一直留着；一切正常时 10 秒后自动消失
     if (!visible) {
       drawMarker();
-      setDiag(text + "\n★ 左上角画了一个绿方块：看得到它 → 渲染正常、是模型位置问题；看不到 → 渲染层有问题");
+      setDiag(text + "\n左上角画了一个绿方块：看得到它 → 渲染正常、是模型位置问题；看不到 → 渲染层有问题");
     } else if (info.defs.length === 0) {
       removeMarker();
-      setDiag(text + "\n★ 补丁没生效：模型里没有注册任何表情（虚拟主机映射或请求拦截有问题）");
+      setDiag(text + "\n补丁没生效：模型里没有注册任何表情（虚拟主机映射或请求拦截有问题）");
     } else {
       removeMarker();
       setDiag(text);
@@ -654,20 +665,51 @@
 
   /**
    * 到点把表情收回、回到待机。
-   * ★ 所有"表情开始显示"的路径都必须调它 —— 漏掉一条，计时器就会拿着旧表情的时间
+   * 所有"表情开始显示"的路径都必须调它 —— 漏掉一条，计时器就会拿着旧表情的时间
    *   去把新表情提前收回（表情看起来就是"闪一下没了"）。
    */
   function armResetTimer() {
     if (resetTimer) clearTimeout(resetTimer);
     resetTimer = setTimeout(function () {
+      // 瞬时表情到期 → 回落到"当前常态表情"，而不是一路清回待机。
+      //   这就是三层结构的简化版：瞬时层撤掉，下面的常态层自动浮现。
+      //   （不能写成"恢复上一个表情"——期间连击可能涨了、常态已经换了。）
+      if (steadyExpression) {
+        model.expression(steadyExpression).catch(function () { });
+        playIdle();
+        return;
+      }
       const em = expressionManager();
       if (em && typeof em.resetExpression === "function") em.resetExpression();
       playIdle();
     }, expressionDurationMs);
   }
 
+  /** 动作（motion）：传进来的是标识，也就是"组名"——库会从这一组里随机挑一个播 */
+  function playMotion(name) {
+    if (!model || !name) return;
+    try {
+      model.motion(name);      // 随机挑一个变体是库自带的行为，我们不用管
+      debugLog("播放动作：" + name);
+    } catch (e) {
+      fail("动作播放失败：" + name + " → " + e.message);
+    }
+  }
+
+  /**
+   * 常态表情：由连击区间决定，**一直保持**。
+   * 关键在"不设 resetTimer" —— 这就是"常态"和"瞬时"的全部区别：
+   * 同一个 exp3 文件，放这儿就一直挂着，放瞬时那边就到期撤掉。
+   */
+  function setSteady(name) {
+    steadyExpression = name || "";
+    if (!steadyExpression) return;
+    debugLog("常态表情 → " + steadyExpression);
+    model.expression(steadyExpression).catch(function () { });
+  }
+
   // 表情请求排队：同一时刻只让一个 expression 调用在"飞"。
-  // ★ 老手坑：pixi-live2d-display 的 expressionManager 被同时调两次会互相打架
+  // 老手坑：pixi-live2d-display 的 expressionManager 被同时调两次会互相打架
   //   （前一个还在加载文件，后一个就直接返回 false），表现出来就是"连续失误时表情时有时无"。
   let expressionBusy = false;
   let pendingExpression = null;
@@ -714,7 +756,7 @@
     const em = expressionManager();
 
     try {
-      // ★ model.expression() 返回 Promise<boolean>，但 false 有三种完全不同的原因：
+      // model.expression() 返回 Promise<boolean>，但 false 有三种完全不同的原因：
       //   ① 名字不存在 ② 这个表情已经就是当前表情（无害）③ 文件加载失败 / 上一次还在加载中（竞态）
       if (await model.expression(name)) return onExpressionStarted(name);
 

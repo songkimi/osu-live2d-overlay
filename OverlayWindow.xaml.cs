@@ -41,12 +41,14 @@ public partial class OverlayWindow : Window
     private const uint VK_1 = 0x31;
     private const uint VK_2 = 0x32;
     private const uint VK_3 = 0x33;
+    private const uint VK_4 = 0x34;
     private const int HOTKEY_TOGGLE_MODE = 9001;
     private const int HOTKEY_QUIT = 9002;
     private const int HOTKEY_RELOAD = 9003;
     private const int HOTKEY_TEST_1 = 9004;
     private const int HOTKEY_TEST_2 = 9005;
     private const int HOTKEY_TEST_3 = 9006;
+    private const int HOTKEY_TEST_RANGE = 9008;
     private const int HOTKEY_TEST_VOICE = 9007;
     private const double ResizeGripSize = 18;
 
@@ -94,8 +96,10 @@ public partial class OverlayWindow : Window
         var exeDir = AppContext.BaseDirectory;
         _config = PluginConfig.Load(Path.Combine(exeDir, "config.json"));
         _webDir = Path.Combine(exeDir, "web");
-        _tracker = new ComboTracker(_config.ComboTriggers.Select(t => t.Threshold),
-                            Array.Empty<ComboRange>());
+        // 常态区间来自配置：省略「最大」表示"以上"，补成 int.MaxValue 交给状态机（它只认闭区间）
+        _tracker = new ComboTracker(
+            _config.ComboTriggers.Select(t => t.Threshold),
+            _config.Ranges.Select(r => new ComboRange(r.Min, r.Max ?? int.MaxValue)));
 
         DebugLog.Start(_config.DebugMode);
 
@@ -135,7 +139,9 @@ public partial class OverlayWindow : Window
         RegisterHotKey(_hwnd, HOTKEY_TEST_1, MOD_CONTROL | MOD_ALT, VK_1);
         RegisterHotKey(_hwnd, HOTKEY_TEST_2, MOD_CONTROL | MOD_ALT, VK_2);
         RegisterHotKey(_hwnd, HOTKEY_TEST_3, MOD_CONTROL | MOD_ALT, VK_3);
+        RegisterHotKey(_hwnd, HOTKEY_TEST_RANGE, MOD_CONTROL | MOD_ALT, VK_4);
         RegisterHotKey(_hwnd, HOTKEY_TEST_VOICE, MOD_CONTROL | MOD_ALT, VK_V);
+        RegisterHotKey(_hwnd, HOTKEY_TEST_RANGE, MOD_CONTROL | MOD_ALT, VK_4);
 
         if (HwndSource.FromHwnd(_hwnd) is { } source)
             source.AddHook(WndProc);
@@ -152,7 +158,7 @@ public partial class OverlayWindow : Window
     {
         try
         {
-            // ★ 透明背景必须在导航之前设置
+            // 透明背景必须在导航之前设置
             Web.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
 
             DebugLog.Write("WebView2：开始创建环境");
@@ -161,7 +167,7 @@ public partial class OverlayWindow : Window
             // 如果这台机器上 WebView2 的 GPU 路径不可用（透明窗口下有可能发生），
             // 没有它就会创建不出 WebGL 上下文 → 模型加载成功但什么都画不出来。
             //
-            // ★ 第二个参数是语音的关键：WebView2 默认沿用 Chromium 的策略 —— 不允许
+            // 第二个参数是语音的关键：WebView2 默认沿用 Chromium 的策略 —— 不允许
             //   "没有用户手势"的媒体自动播放。而这个窗口是点击穿透的，WebView2 永远等不到
             //   一次点击或按键，不加它语音会一句都放不出来（play() 直接被拒绝）。
             var options = new CoreWebView2EnvironmentOptions
@@ -188,12 +194,24 @@ public partial class OverlayWindow : Window
             if (_voiceDir is not null)
                 DebugLog.Write($"语音目录已映射：{_voiceDir}（{_voiceEmotionNames.Count} 类情绪）");
 
-            // 生成"补过动作与表情"的模型定义到临时目录，再把四个目录映射成虚拟主机
+            // 先把模型扫一遍 —— 配置里引用的是"标识"，补丁要靠这份扫描结果把标识翻回文件路径
+            var scan = ModelScanner.Scan(_config.Model.Directory, _config.Model.Entry);
+            foreach (var problem in scan.Problems) DebugLog.Write("扫描：" + problem);
+
+            // 生成"补过资源"的模型定义到临时目录，再把四个目录映射成虚拟主机
             var patchDir = Path.Combine(Path.GetTempPath(), "osu-live2d-overlay");
             try
             {
-                var patchedPath = ModelHost.WritePatchedModel(_config, patchDir);
-                ShowStatus($"模型已补丁：{_config.Model.Expressions.Count} 个表情 + 待机动作 → {Path.GetFileName(patchedPath)}",
+                var patch = ModelHost.WritePatchedModel(_config, scan, patchDir);
+
+                // 配置里写了模型里没有的标识（多半是打错字）—— 这是"不修就没法用"，必须说出来
+                foreach (var problem in patch.Problems)
+                {
+                    DebugLog.Write("补丁：" + problem);
+                    ShowStatus(problem, autoHide: false);
+                }
+
+                ShowStatus($"模型已补丁：{scan.Expressions.Count} 个表情 / {scan.Motions.Count} 个动作 → {Path.GetFileName(patch.Path)}",
                            autoHide: true);
             }
             catch (Exception ex)
@@ -235,12 +253,11 @@ public partial class OverlayWindow : Window
         {
             type = "init",
             modelUrl = url,
-            // 没填「待机动作文件」就传空 —— 页面对空值会跳过待机动作，不会一直报"动作不存在"
-            idle = string.IsNullOrWhiteSpace(_config.Model.IdleFile)
-                ? ""
-                : (string.IsNullOrWhiteSpace(_config.Model.IdleGroup) ? "Idle" : _config.Model.IdleGroup),
+            // 「待机动作」填的是标识（组名）。未注册的（VTS 成品的 待机.motion3）会被补丁注册成
+            // 同名组，已注册的（官方模型的 Idle）直接用 —— 两种情况页面调用的方式完全一样。
+            idle = _config.Model.IdleGroup,
             view = new { zoom = _config.View.Zoom, offsetY = _config.View.OffsetY, offsetX = _config.View.OffsetX },
-            expressionDurationMs = _config.ExpressionDurationMs,
+            expressionDurationMs = _config.Performance.ExpressionDurationMs,
             debug = _config.DebugMode,
             voice = _voicePayload,
             mouth = new
@@ -300,7 +317,7 @@ public partial class OverlayWindow : Window
 
     /// <summary>
     /// 给页面发消息。
-    /// ★ 注意：WebView2 的 API 只能在 UI 线程调用（连击事件是从 WebSocket 接收线程来的），
+    /// 注意：WebView2 的 API 只能在 UI 线程调用（连击事件是从 WebSocket 接收线程来的），
     ///   所以这里统一做一次线程调度 —— 否则消息发不出去，而且异常会被 WS 循环吞掉，表现成"什么都没发生"。
     /// </summary>
     private void SendJson(object payload)
@@ -325,7 +342,7 @@ public partial class OverlayWindow : Window
 
     // ---------------- 测试触发（Ctrl+Alt+1/2/3）----------------
 
-    /// <summary>测试用：直接按配置里的第 index 条连击触发发一次事件（不经过游戏）</summary>
+    /// <summary>测试用：按配置里第 index 条连击触发造一个 Step 事件，走正式处理路径</summary>
     private void SendTestCombo(int index)
     {
         var trigger = _config.ComboTriggers.ElementAtOrDefault(index);
@@ -335,22 +352,24 @@ public partial class OverlayWindow : Window
             return;
         }
 
-        SendJson(new
-        {
-            type = "combo",
-            expression = trigger.Expression,
-            combo = trigger.Threshold,
-            step = index + 1,
-            threshold = trigger.Threshold
-        });
-        ShowStatus($"[测试] 模拟 {trigger.Threshold} 连击 → {trigger.Expression}", autoHide: true);
+        var evt = new ComboEvent(
+            Kind: ComboEventKind.Step,
+            Combo: trigger.Threshold,
+            PreviousCombo: Math.Max(0, trigger.Threshold - 1),
+            Level: index + 1,
+            Threshold: trigger.Threshold,
+            MaxCombo: trigger.Threshold,
+            RangeIndex: 0);
+
+        HandleEvent(evt);
+        ShowStatus($"[测试] 模拟跨过 {trigger.Threshold} 连击", autoHide: true);
     }
 
     private int _missTestIndex;
 
     /// <summary>
     /// 测试用：轮流模拟"够大额 / 够小额 / 还没到门槛"三种断连击。
-    /// 走的是和真实游戏同一条逻辑（ResolveMiss），所以门槛到底对不对，连按三下就知道了。
+    /// 造出事件后交给 HandleEvent —— 和真实游戏走同一条路，所以门槛对不对连按三下就知道。
     /// </summary>
     private void SendTestMiss()
     {
@@ -361,17 +380,6 @@ public partial class OverlayWindow : Window
             _ => Math.Max(0, _config.Miss.SmallThreshold - 1)     // 还没到门槛 → 应该毫无反应
         };
 
-        var (expression, emotion) = ResolveMiss(previous);
-
-        if (expression.Length == 0 && emotion.Length == 0)
-        {
-            ShowStatus($"[测试] 模拟断之前 {previous} 连击 → 低于门槛，什么都不做", autoHide: true);
-            DebugLog.Write($"[测试] 断之前 {previous} 连击：低于门槛，不发消息");
-            return;
-        }
-
-        // 合成一个 Break 事件，走正式发送路径。
-        // RangeIndex 传 -1：这是测试键造出来的假事件，不代表真实区间。
         var evt = new ComboEvent(
             Kind: ComboEventKind.Break,
             Combo: 0,
@@ -380,7 +388,9 @@ public partial class OverlayWindow : Window
             Threshold: 0,
             MaxCombo: previous,
             RangeIndex: -1);
-        DispatchTrigger(evt, expression, emotion, $"[测试] 断连击（断之前 {previous} 连击）");
+
+        HandleEvent(evt);
+        ShowStatus($"[测试] 模拟断之前 {previous} 连击", autoHide: true);
     }
 
     /// <summary>测试用：按顺序轮流试听每一类情绪（每按一次换一类，方便把语音文件都过一遍）</summary>
@@ -397,6 +407,24 @@ public partial class OverlayWindow : Window
 
         SendJson(new { type = "voice", emotion = name, reason = "测试试听" });
         ShowStatus($"[测试] 语音情绪 → {name}（再按一次听下一类）", autoHide: true);
+    }
+    private int _rangeTestIndex;
+    private static readonly int[] RangeTestCombos = { 10, 60, 110, 170, 300 };
+
+    /// <summary>
+    /// 测试用：把连击数依次推过几个值，正好落在各个常态区间里。
+    /// 走的是和真实游戏完全同一条路（同一个状态机、同一个 HandleEvent），
+    /// 只是数据是自己造的 —— 所以不开游戏也能验证"区间 → 常态表情"这整条链。
+    /// </summary>
+    private void SendTestRange()
+    {
+        var combo = RangeTestCombos[_rangeTestIndex % RangeTestCombos.Length];
+        _rangeTestIndex++;
+
+        var events = _tracker.Update(combo, combo);
+        foreach (var evt in events) HandleEvent(evt);
+
+        ShowStatus($"[测试] 连击推到 {combo} → {events.Count} 个事件", autoHide: true);
     }
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -415,6 +443,7 @@ public partial class OverlayWindow : Window
                     DebugLog.Write("页面就绪（模型已加载）");
                     ShowStatus("模型已就绪" + (DebugLog.FilePath.Length > 0 ? $"（调试日志：{DebugLog.FilePath}）" : ""),
                                autoHide: true);
+                    SendCurrentSteady();     // 页面刚起来，把当前的常态表情补给它
                     StartCursorTracking();
                     break;
 
@@ -435,83 +464,81 @@ public partial class OverlayWindow : Window
         }
     }
 
+    /// <summary>
+    /// 页面就绪时把"当前处于哪个区间"补发一次。
+    /// 区间事件在程序启动那一刻就报过了，而那时页面还在加载、消息直接被丢掉 ——
+    /// 不补这一下，角色会一直没有常态表情（要等玩家真跨过下一个区间才出现）。
+    /// </summary>
+    private void SendCurrentSteady()
+    {
+        var evt = new ComboEvent(
+            Kind: ComboEventKind.RangeChanged,
+            Combo: 0,
+            PreviousCombo: 0,
+            Level: 0,
+            Threshold: 0,
+            MaxCombo: 0,
+            RangeIndex: _tracker.CurrentRangeIndex);
+
+        HandleEvent(evt);
+    }
+
     // ---------------- 连击事件 → 页面 ----------------
 
     private void OnComboUpdated(int combo, int maxCombo)
     {
         var events = _tracker.Update(combo, maxCombo);
         if (events.Count == 0) return;
-        foreach (var evt in events)
+
+        if (!_pageReady)
         {
-            if (!_pageReady)
-            {
-                // 页面还没就绪就丢消息，并在界面上说清楚（否则会表现成"完全没反应"）
-                ShowStatus("页面未就绪，忽略一次触发：" + evt.Kind, autoHide: true);
-                return;
-            }
-
-            if (evt.Kind == ComboEventKind.Step)
-            {
-                var trigger = _config.ComboTriggers.FirstOrDefault(t => t.Threshold == evt.Threshold);
-                DispatchTrigger(evt, trigger?.Expression ?? "", trigger?.VoiceEmotion ?? "",
-                                $"{evt.Combo} 连击（跨过 {evt.Threshold}）");
-                return;
-            }
-
-            // 断连击：先看"断之前手里有多少连击"，再决定理不理他
-            var (expression, emotion) = ResolveMiss(evt.PreviousCombo);
-            if (expression.Length == 0 && emotion.Length == 0)
-            {
-                DebugLog.Write($"断连击（断之前 {evt.PreviousCombo} 连击）→ 还没到门槛 " +
-                               $"{_config.Miss.SmallThreshold}，不反应");
-                return;
-            }
-
-            DispatchTrigger(evt, expression, emotion, $"断连击（断之前 {evt.PreviousCombo} 连击）");
+            // 页面还没就绪就丢消息，并在界面上说清楚（否则会表现成"完全没反应"）
+            ShowStatus("页面未就绪，忽略这次触发", autoHide: true);
+            return;
         }
+
+        foreach (var evt in events) HandleEvent(evt);
     }
 
     /// <summary>
-    /// 断连击前手里有 previousCombo 连击 → 该用哪一档（表情 + 语音各一项）。
-    /// 两档门槛都不到就返回两个空串，调用方什么都不做 —— 原因见 MissConfig 的注释。
+    /// 把一个事件交给 TriggerResolver 翻译成"该发什么"，再把动作发给页面。
+    /// 正常路径和测试热键都走这里 —— 保证"测的"和"真跑的"是同一条路。
+    /// 这里只负责"怎么发"（SendJson / 日志 / 状态栏），"发什么"由 TriggerResolver 决定。
     /// </summary>
-    private (string Expression, string Emotion) ResolveMiss(int previousCombo)
+    private void HandleEvent(ComboEvent evt)
     {
-        if (previousCombo >= _config.Miss.BigThreshold)
-            return (_config.Miss.BigExpression, _config.Miss.BigVoiceEmotion);
-
-        if (previousCombo >= _config.Miss.SmallThreshold)
-            return (_config.Miss.SmallExpression, _config.Miss.SmallVoiceEmotion);
-
-        return ("", "");
-    }
-
-    /// <summary>
-    /// 把一次触发发给页面：表情一条消息、语音一条消息。
-    /// ★ 两条消息各查各的配置、互不依赖 —— 这就是"解耦"落在代码上的样子：
-    ///   表情没播出来语音照样说，语音文件缺了表情照样演。
-    /// </summary>
-    private void DispatchTrigger(ComboEvent evt, string expression, string emotion, string note)
-    {
-        if (!string.IsNullOrWhiteSpace(expression))
-            SendJson(new
+        foreach (var action in TriggerResolver.Resolve(evt, _config))
+        {
+            if (!string.IsNullOrWhiteSpace(action.Expression))
             {
-                type = evt.Kind == ComboEventKind.Step ? "combo" : "miss",
-                expression,
-                combo = evt.Combo,
-                step = evt.Level,
-                threshold = evt.Threshold
-            });
+                SendJson(new
+                {
+                    type = action.Kind switch
+                    {
+                        TriggerActionKind.Combo => "combo",
+                        TriggerActionKind.Miss  => "miss",
+                        _                       => "steady"      // 区间变化 → 常态表情
+                    },
+                    expression = action.Expression,
+                    combo = evt.Combo,
+                    step = evt.Level,
+                    threshold = evt.Threshold
+                });
+            }
 
-        if (!string.IsNullOrWhiteSpace(emotion))
-            SendJson(new { type = "voice", emotion, reason = note, combo = evt.Combo });
+            // 动作（motion）单独一条消息 —— 页面还没支持，先发着，页面忽略即可
+            if (!string.IsNullOrWhiteSpace(action.Action))
+                SendJson(new { type = "motion", action = action.Action, reason = action.Note });
 
-        DebugLog.Write(note + " → 表情「" + expression + "」语音「" + emotion + "」");
+            // 语音也是独立的一条：表情没播出来语音照样说（这就是"解耦"落在代码上的样子）
+            if (!string.IsNullOrWhiteSpace(action.Emotion))
+                SendJson(new { type = "voice", emotion = action.Emotion, reason = action.Note, combo = evt.Combo });
 
-        if (expression.Length == 0 && emotion.Length == 0) return;
+            DebugLog.Write(action.Note +
+                           $" → 表情「{action.Expression}」动作「{action.Action}」语音「{action.Emotion}」");
 
-        Dispatcher.Invoke(() => ShowStatus(note + " → " + (expression.Length > 0 ? expression : emotion),
-                                           autoHide: true));
+            Dispatcher.Invoke(() => ShowStatus(action.Note, autoHide: true));
+        }
     }
 
     // ---------------- 状态提示（会被 WebView2 遮住，所以只在调整模式/出错时看得到） ----------------
@@ -658,6 +685,9 @@ public partial class OverlayWindow : Window
                         handled = true;
                         break;
 
+                    case HOTKEY_TEST_RANGE:
+
+
                     case HOTKEY_QUIT:
                         Close();
                         handled = true;
@@ -694,6 +724,7 @@ public partial class OverlayWindow : Window
             UnregisterHotKey(_hwnd, HOTKEY_TEST_1);
             UnregisterHotKey(_hwnd, HOTKEY_TEST_2);
             UnregisterHotKey(_hwnd, HOTKEY_TEST_3);
+            UnregisterHotKey(_hwnd, HOTKEY_TEST_RANGE);
             UnregisterHotKey(_hwnd, HOTKEY_TEST_VOICE);
         }
 

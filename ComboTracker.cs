@@ -15,7 +15,16 @@ public enum ComboEventKind
 /// <summary>一个连击区间（只关心边界；那一段该用哪个表情由外面的配置决定）</summary>
 public readonly record struct ComboRange(int Min, int Max);
 
-/// <summary>一次需要被表现层执行的动作</summary>
+/// <summary>
+/// 一次需要被表现层执行的动作
+/// </summary>
+/// <param name="Kind">应该发生的状态</param>
+/// <param name="Combo">当前combo</param>
+/// <param name="PreviousCombo">前combo</param>
+/// <param name="Level">触发的阈值等级</param>
+/// <param name="Threshold">当前正跨过的阈值</param>
+/// <param name="MaxCombo">最大连击</param>
+/// <param name="RangeIndex">当前处于的区间（默认-1）</param>
 public readonly record struct ComboEvent(
     ComboEventKind Kind,
     int Combo,
@@ -33,6 +42,14 @@ public sealed class ComboTracker
     private int _lastCombo;
     private int _lastLevel;
     private int _lastRange = -1;
+
+    /// <summary>
+    /// 当前处于第几个区间（没配区间 = -1）。
+    /// 给"页面就绪时补发一次常态表情"用：区间事件在启动那一刻就报过了，
+    /// 而那时页面还在加载、消息被丢弃 —— 不补这一下，角色会一直没有常态表情。
+    /// </summary>
+    public int CurrentRangeIndex => _lastRange;
+
     /// <summary>
     /// thresholds：阈值（来自配置，比如 50、100、200）；可能乱序、重复、带 0，需要你整理
     /// ranges：连击区间；顺序有意义，不要排序；Min &gt; Max 的非法项要忽略

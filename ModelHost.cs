@@ -36,18 +36,24 @@ public static class ModelHost
         map(ModelHost2, modelDir);
         map(PatchHost, patchDir);
 
-        // 语音目录是可选的。★ 映射一个不存在的目录会抛异常，所以必须先判断
+        // 语音目录是可选的。映射一个不存在的目录会抛异常，所以必须先判断
         if (!string.IsNullOrWhiteSpace(voiceDir) && Directory.Exists(voiceDir))
             map(VoiceHost, voiceDir);
     }
 
     /// <summary>
-    /// 生成"补过动作与表情"的模型定义，写到临时目录，返回补丁文件的完整路径。
-    /// 做法：把原文里的所有文件引用改写成指向 model.local 的绝对地址，
-    ///       再补上 Motions（待机）与 Expressions（配置里的表情）。
+    /// 生成"补过资源"的模型定义，写到临时目录。
+    ///
+    /// 核心原则：**只补"配置里引用了、但模型自己没注册"的资源。**
+    ///   · 官方标准模型（Angry / Idle 已经在 model3.json 里）→ 配置引用它，什么都不用改
+    ///   · VTS 成品（2.exp3 从没注册过）→ 从扫描结果拿到文件路径，补进去
+    ///
+    /// 这样我们永远不会动模型原有的东西 —— "补丁把模型自带动作删了"那类问题
+    /// 从根上就不存在了（而不是"小心地不要删"）。
     /// </summary>
-    public static string WritePatchedModel(PluginConfig config, string patchDir)
+    public static PatchResult WritePatchedModel(PluginConfig config, ModelScanResult scan, string patchDir)
     {
+        var problems = new List<string>();
         var model = config.Model;
         var entryPath = Path.Combine(model.Directory, model.Entry);
 
@@ -58,7 +64,7 @@ public static class ModelHost
             ? d
             : new Dictionary<string, object?>();
 
-        // ① 原有引用改成绝对地址（Moc / 贴图 / 物理 / 显示信息）
+        // ① 原有引用改成绝对地址（Moc / 贴图 / 物理 / 显示信息）—— 和以前一样
         if (fileRefs.TryGetValue("Moc", out var moc) && moc is JsonElement me && me.ValueKind == JsonValueKind.String)
             fileRefs["Moc"] = Absolute(me.GetString()!);
 
@@ -73,50 +79,59 @@ public static class ModelHost
             if (fileRefs.TryGetValue(key, out var v) && v is JsonElement e && e.ValueKind == JsonValueKind.String)
                 fileRefs[key] = Absolute(e.GetString()!);
 
-        // ② 补上待机动作。
-        //    ★ 必须**追加**到原有的动作组里，不能整个替换 ——
-        //      Cubism 官方标准模型（SDK 示例那一类）自带 Idle/Tap/Flick/Shake 一整套动作，
-        //      直接替换等于把人家模型的动作全删了。（这里曾经就是这么错的，注释还写着
-        //      "原始文件里通常没有"——实测：官方模型全都有。）
-        if (!string.IsNullOrWhiteSpace(model.IdleFile))
+        var (usedExpressions, usedMotions) = CollectUsedIds(config);
+
+        // ② 动作：只补未注册的。已注册的（Idle / Tap / Flick…）原样留着，一个字都不动。
+        var motions = fileRefs.TryGetValue("Motions", out var rawMotions)
+                      && rawMotions is Dictionary<string, object?> motionDict
+            ? motionDict
+            : new Dictionary<string, object?>();
+
+        foreach (var id in usedMotions)
         {
-            var group = string.IsNullOrWhiteSpace(model.IdleGroup) ? "Idle" : model.IdleGroup;
-            var idle = new List<object?>
+            var resource = FindById(scan.Motions, id);
+            if (resource is null)
             {
-                new Dictionary<string, object?>
+                problems.Add($"动作标识「{id}」在模型里找不到（检查配置是不是写错了）");
+                continue;
+            }
+            if (resource.Registered) continue;              // 模型自己有，不用补
+
+            motions[id] = resource.Files
+                .Select(f => (object?)new Dictionary<string, object?>
                 {
-                    ["File"] = Absolute(model.IdleFile),
+                    ["File"] = Absolute(f),
                     ["FadeInTime"] = 0.5,
                     ["FadeOutTime"] = 0.5
-                }
-            };
-
-            if (fileRefs.TryGetValue("Motions", out var existingMotions)
-                && existingMotions is Dictionary<string, object?> motions)
-                motions[group] = idle;                 // 同名组以配置里的为准
-            else
-                fileRefs["Motions"] = new Dictionary<string, object?> { [group] = idle };
+                })
+                .ToList();
         }
 
-        // ③ 补上配置里的表情：同样**追加**到原有的表情列表里。
-        //    同名的以配置里的为准（用户显式配的应该生效），名字不同的全部保留。
+        if (motions.Count > 0) fileRefs["Motions"] = motions;
+
+        // ③ 表情：同样只补未注册的。名字就用标识本身 ——
+        //    这样"配置里的标识 / 补丁注册的名字 / 页面调用的名字"是同一个词，
+        //    页面侧不需要做任何翻译。
         var expressions = fileRefs.TryGetValue("Expressions", out var rawExpressions)
                           && rawExpressions is List<object?> expressionList
             ? expressionList
             : new List<object?>();
 
-        foreach (var item in model.Expressions)
+        foreach (var id in usedExpressions)
         {
-            if (string.IsNullOrWhiteSpace(item.Name) || string.IsNullOrWhiteSpace(item.File)) continue;
-
-            expressions.RemoveAll(o => o is Dictionary<string, object?> d
-                                       && d.TryGetValue("Name", out var n)
-                                       && n as string == item.Name);
+            var resource = FindById(scan.Expressions, id);
+            if (resource is null)
+            {
+                problems.Add($"表情标识「{id}」在模型里找不到（检查配置是不是写错了）");
+                continue;
+            }
+            if (resource.Registered) continue;
+            if (resource.Files.Count == 0) continue;
 
             expressions.Add(new Dictionary<string, object?>
             {
-                ["Name"] = item.Name,
-                ["File"] = Absolute(item.File)
+                ["Name"] = id,
+                ["File"] = Absolute(resource.Files[0])
             });
         }
 
@@ -128,8 +143,43 @@ public static class ModelHost
         var outPath = Path.Combine(patchDir, PatchedFileName);
         File.WriteAllText(outPath, JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true }));
 
-        return outPath;
+        return new PatchResult(outPath, problems);
     }
+
+    /// <summary>
+    /// 把配置里所有"被引用到的标识"收集起来（表情 + 动作）。
+    /// 从配置反向收集是刻意的：模型里可能有好几百个资源，**只有被引用的才需要补**。
+    /// 把整个模型都注册进去既没必要，也会让页面上的可选项变得难以理解。
+    /// </summary>
+    private static (HashSet<string> Expressions, HashSet<string> Motions) CollectUsedIds(PluginConfig config)
+    {
+        var expressions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var motions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Take(ReactionConfig? reaction)
+        {
+            if (reaction is null) return;
+            if (!string.IsNullOrWhiteSpace(reaction.Expression)) expressions.Add(reaction.Expression.Trim());
+            if (!string.IsNullOrWhiteSpace(reaction.Action)) motions.Add(reaction.Action.Trim());
+        }
+
+        foreach (var part in config.PersistentParts)
+            if (!string.IsNullOrWhiteSpace(part)) expressions.Add(part.Trim());
+
+        foreach (var range in config.Ranges)
+            if (!string.IsNullOrWhiteSpace(range.Expression)) expressions.Add(range.Expression.Trim());
+
+        foreach (var trigger in config.ComboTriggers) Take(trigger.Reaction);
+        Take(config.Miss.SmallReaction);
+        Take(config.Miss.BigReaction);
+
+        if (!string.IsNullOrWhiteSpace(config.Model.IdleGroup)) motions.Add(config.Model.IdleGroup.Trim());
+
+        return (expressions, motions);
+    }
+
+    private static ModelResource? FindById(IReadOnlyList<ModelResource> list, string id)
+        => list.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>把模型目录里的相对路径转成 model.local 的绝对地址</summary>
     private static string Absolute(string relativePath) => $"https://{ModelHost2}/{Encode(relativePath)}";
@@ -139,7 +189,7 @@ public static class ModelHost
 
     /// <summary>
     /// 相对路径 → URL 路径：逐段做 URL 编码，但保留分隔用的斜杠。
-    /// ★ 文件名里的中文、全角符号（如「喵（平静）.wav」的（）、「喵？」的？）都必须编码，
+    /// 文件名里的中文、全角符号（如「喵（平静）.wav」的（）、「喵？」的？）都必须编码，
     ///   否则浏览器按 URL 规则解析时会出错；而整串一起编码会把 / 也编掉，路径就断了。
     /// </summary>
     private static string Encode(string relativePath)
@@ -168,3 +218,5 @@ public static class ModelHost
         _ => JsonSerializer.Deserialize<object>(element.GetRawText())
     };
 }
+/// <summary>模型补丁的结果：补丁文件路径 + 过程中发现的问题（给界面显示）</summary>
+public sealed record PatchResult(string Path, IReadOnlyList<string> Problems);
