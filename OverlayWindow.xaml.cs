@@ -77,6 +77,13 @@ public partial class OverlayWindow : Window
     private readonly CancellationTokenSource _cts = new();
     private readonly string _webDir;
 
+    /// <summary>
+    /// 表情清单：标识 → 这个表情要改哪些参数。
+    /// 启动时从 exp3 文件读一次，之后每次触发只是查字典 —— 页面收消息时直接带上参数表，
+    /// 页面就不用去碰文件系统了（它本来也不该知道文件在哪）。
+    /// </summary>
+    private ExpressionCatalog _catalog = ExpressionCatalog.Empty;
+
     private IntPtr _hwnd = IntPtr.Zero;
     private bool _isRunningMode = true;
     private bool _pageReady;
@@ -198,6 +205,17 @@ public partial class OverlayWindow : Window
             var scan = ModelScanner.Scan(_config.Model.Directory, _config.Model.Entry);
             foreach (var problem in scan.Problems) DebugLog.Write("扫描：" + problem);
 
+            // 表情清单：把每个 exp3 文件里"要改哪些参数"读进来（页面合成时要用），
+            // 顺带拿 cdi3 里的名字给它起个人话名字（"3.exp3" → "星星眼"）
+            _catalog = ExpressionCatalog.Build(scan, _config.Model.Directory);
+            foreach (var problem in _catalog.Problems) DebugLog.Write("表情：" + problem);
+            if (scan.Expressions.Count > 0)
+            {
+                DebugLog.Write($"表情清单 {scan.Expressions.Count} 个，例如 " +
+                               string.Join("、", scan.Expressions.Take(5)
+                                   .Select(r => $"{r.Id} → {_catalog.DisplayName(r.Id)}")));
+            }
+
             // 生成"补过资源"的模型定义到临时目录，再把四个目录映射成虚拟主机
             var patchDir = Path.Combine(Path.GetTempPath(), "osu-live2d-overlay");
             try
@@ -260,6 +278,12 @@ public partial class OverlayWindow : Window
             expressionDurationMs = _config.Performance.ExpressionDurationMs,
             debug = _config.DebugMode,
             voice = _voicePayload,
+            // 常驻层：用户勾的"一直在"的形象元素（鞋子、高光…）。
+            // 整批发给页面，之后由页面自己管生死；空列表就什么都不挂。
+            persistent = _config.PersistentParts
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => new { id = id.Trim(), @params = _catalog.ParametersOf(id) })
+                .ToList(),
             mouth = new
             {
                 enabled = _config.Mouth.Enabled,
@@ -520,6 +544,9 @@ public partial class OverlayWindow : Window
                         _                       => "steady"      // 区间变化 → 常态表情
                     },
                     expression = action.Expression,
+                    // 这个表情要改哪些参数 —— 页面拿到就能直接往模型上写，不用自己去读文件。
+                    // （@ 只是把 C# 关键字 params 当普通标识符用，序列化出来是 "params"）
+                    @params = _catalog.ParametersOf(action.Expression),
                     combo = evt.Combo,
                     step = evt.Level,
                     threshold = evt.Threshold

@@ -52,9 +52,11 @@
   // ============================================================
   // 插件页面：不做任何"演示"的事，完全由 C# 侧的消息驱动
   //   C# → JS：{type:"init", modelUrl, idle, view, expressionDurationMs, debug, voice}
-  //            {type:"combo", expression, combo, step}
-  //            {type:"miss",  expression, combo}
-  //            {type:"voice", emotion, reason}        ← 语音：和上面两条完全平级、互不依赖
+  //            {type:"layers", persistent:[{id, params}]}   ← 常驻层（页面就绪时下发一次）
+  //            {type:"steady", expression, params}          ← 常态层（连击区间变化时）
+  //            {type:"combo", expression, params, combo, step}
+  //            {type:"miss",  expression, params, combo}
+  //            {type:"voice", emotion, reason}        ← 语音：和上面几条完全平级、互不依赖
   //            {type:"view",  view:{zoom,offsetY,offsetX}}
   //            {type:"idle"} {type:"status", text, keep}
   //   JS → C#：{type:"log", text}  {type:"ready"}  {type:"error", text}
@@ -68,8 +70,6 @@
   let baseScale = 1;
   let idleGroup = "Idle";
   let expressionDurationMs = 1500;
-  let resetTimer = null;
-  let steadyExpression = "";   // 当前常态表情的标识（由区间决定，一直保持）
   let rendererName = "?";
 
   const view = { zoom: 1, offsetY: 0, offsetX: 0 };
@@ -339,7 +339,6 @@
     }
 
     debugLog("口型参数 = " + mouthParamId + "，幅度 " + mouthStrength);
-    model.internalModel.on("beforeModelUpdate", mouthTick);
   }
 
   /** 开始"说话"：按音频时长决定说到什么时候 */
@@ -401,6 +400,16 @@
           setupVoice(msg.voice);
           await loadModel(msg.modelUrl);
           setupMouth(msg.mouth);      // 要在模型加载完之后：口型参数是从模型里找出来的
+
+          // 表情层合成和口型挂在同一个钩子上：
+          //   此刻库的 动作/表情/眨眼/目光/物理/姿势 都已经写完参数、还没提交，
+          //   我们写的值会生效，也不会被它们覆盖。
+          //   口型排在后面 —— 说话时嘴必须听口型的，不能被表情层按回去。
+          model.internalModel.on("beforeModelUpdate", function () {
+            composeLayers();
+            mouthTick();
+          });
+          if (msg.persistent) setPersistent(msg.persistent);
         } catch (e) {
           fail("模型加载失败：" + e.message);
           setDiag("加载失败：" + e.message);     // 加载失败是真问题 → 诊断条常驻显示
@@ -409,18 +418,23 @@
 
       case "combo":
         debugLog("收到 combo 消息：" + msg.expression);
-        requestExpression(msg.expression);
+        playInstant(msg.expression, msg.params, expressionDurationMs);
         break;
 
       case "miss":
         debugLog("收到 miss 消息：" + msg.expression);
-        requestExpression(msg.expression);
+        playInstant(msg.expression, msg.params, expressionDurationMs);
         break;
 
-      // 区间变化 → 换常态表情。它不撤销，会一直保持到区间再变；
-      // 瞬时表情到期时也会回落到它（见 armResetTimer）。
+      // 区间变化 → 换常态层。它不过期，一直挂着直到区间再变；
+      // 瞬时层退场后它自己就浮出来了，不需要谁来"恢复上一个表情"。
       case "steady":
-        setSteady(msg.expression);
+        setSteady(msg.expression, msg.params);
+        break;
+
+      // 常驻层：整批替换（页面刚就绪、或者配置变了）
+      case "layers":
+        setPersistent(msg.persistent);
         break;
 
       // 动作：和表情是两条独立的消息，页面这边各播各的
@@ -652,37 +666,171 @@
     return { groups: groups, defs: defs };
   }
 
-  function expressionManager() {
-    return model && model.internalModel && model.internalModel.motionManager
-      ? model.internalModel.motionManager.expressionManager
-      : null;
+  // ---------------- 表情：三层参数合成 ----------------
+  //
+  // 为什么不再用 model.expression()：
+  //   库的 expressionManager 只有**一个槽位** —— 挂上新表情会把旧的卸掉。
+  //   可模型这边并不冲突：绒绒的 17 个表情各改一个独立参数，完全可以同时开着。
+  //   挡路的是库的槽位设计，不是模型。
+  //
+  // 所以"谁能和谁同时存在"改由**层**来管，按"能活多久"分三种：
+  //   常驻 persistent —— 用户勾的形象元素（鞋子、高光…），一直在
+  //   常态 steady     —— 连击区间决定，跟着区间换
+  //   瞬时 instant    —— 阈值触发，到期淡出
+  //
+  // 每帧在 beforeModelUpdate 里按 常驻 → 常态 → 瞬时 各应用一遍。
+  //   这个顺序只对 Overwrite 型的参数有意义（Add 是加法，先后无所谓）。
+
+  const FADE_IN_MS = 160;      // 一层淡入用多久
+  const FADE_OUT_MS = 240;     // 淡出比淡入慢一点：撤掉时不那么突兀
+  const LAYER_ORDER = { persistent: 0, steady: 1, instant: 2 };
+
+  /** 所有活着的表现单元（含正在淡出的） */
+  let units = [];
+  let lastComposeAt = 0;
+
+  /**
+   * 造一个表现单元 —— "把一份参数表挂上去，并且管着它的生死"。
+   * @param kind   persistent / steady / instant
+   * @param id     标识，只用于日志和诊断
+   * @param params exp3 的参数表 [{ id, value, blend }]，由 C# 侧读好下发
+   * @param ttlMs  活多久（0 = 不过期）
+   */
+  function makeUnit(kind, id, params, ttlMs) {
+    return {
+      kind: kind,
+      id: id,
+      params: params || [],
+      weight: 0,                                   // 从 0 淡入
+      target: 1,                                   // 1 = 活着，0 = 正在退场
+      dieAt: ttlMs > 0 ? performance.now() + ttlMs : 0
+    };
   }
 
-  function currentExpressionName(em) {
-    const cur = em && em.currentExpression;
-    return cur ? (cur.Name || cur.name) : "";
+  function isAlive(kind, id) {
+    return units.some(function (u) { return u.kind === kind && u.id === id && u.target === 1; });
+  }
+
+  /** 让某一类里活着的单元退场（淡出，不是立刻消失）。keepId 留着不动。 */
+  function retire(kind, keepId) {
+    for (const u of units) {
+      if (u.kind === kind && u.target === 1 && u.id !== keepId) u.target = 0;
+    }
   }
 
   /**
-   * 到点把表情收回、回到待机。
-   * 所有"表情开始显示"的路径都必须调它 —— 漏掉一条，计时器就会拿着旧表情的时间
-   *   去把新表情提前收回（表情看起来就是"闪一下没了"）。
+   * 把一个表情挂到某一层上。
+   *
+   * 同一个表情如果已经在这一层上（活着的、或者还在淡出的），就**复用那个单元**：
+   *   从它当前的权重继续往上爬，绝不新建第二个。
+   * 为什么必须这样：断连击时常是"同一个表情被连着触发"，如果每次都新建一份，
+   *   两份 exp3 会在同一帧都往上加 → 参数值翻倍（Add 型会被钳到上限、其它型会失真），
+   *   而且新单元从权重 0 重新淡入，看起来就是中途闪一下。
    */
-  function armResetTimer() {
-    if (resetTimer) clearTimeout(resetTimer);
-    resetTimer = setTimeout(function () {
-      // 瞬时表情到期 → 回落到"当前常态表情"，而不是一路清回待机。
-      //   这就是三层结构的简化版：瞬时层撤掉，下面的常态层自动浮现。
-      //   （不能写成"恢复上一个表情"——期间连击可能涨了、常态已经换了。）
-      if (steadyExpression) {
-        model.expression(steadyExpression).catch(function () { });
-        playIdle();
-        return;
+  function activate(kind, id, params, ttlMs) {
+    for (const u of units) {
+      if (u.kind === kind && u.id === id) {
+        u.target = 1;                                   // 淡出到一半的，原路爬回去
+        u.params = params || u.params;
+        u.dieAt = ttlMs > 0 ? performance.now() + ttlMs : 0;
+        return u;
       }
-      const em = expressionManager();
-      if (em && typeof em.resetExpression === "function") em.resetExpression();
-      playIdle();
-    }, expressionDurationMs);
+    }
+    const u = makeUnit(kind, id, params, ttlMs);
+    units.push(u);
+    return u;
+  }
+
+  /** 常驻层：整批替换 */
+  function setPersistent(list) {
+    const items = list || [];
+    const wanted = items.map(function (it) { return it.id; });
+    for (const u of units) {
+      if (u.kind === "persistent" && u.target === 1 && wanted.indexOf(u.id) < 0) u.target = 0;
+    }
+    for (const it of items) activate("persistent", it.id, it.params, 0);
+    debugLog("常驻层 → " + (wanted.length ? wanted.join("、") : "（空）"));
+  }
+
+  /** 常态层：区间变了就换人（旧的淡出、新的淡入） */
+  function setSteady(id, params) {
+    if (!id) { retire("steady"); return; }
+    if (isAlive("steady", id)) return;             // 还是同一个区间 → 什么都不做
+    retire("steady", id);
+    activate("steady", id, params, 0);
+    debugLog("常态层 → " + id);
+  }
+
+  /**
+   * 瞬时层：阈值触发。
+   * 同一个表情正在演就不重新淡入，只把到期时间往后推 ——
+   *   这就是配置里「重复触发策略：保留正在播放」的意思，也顺手挡掉了
+   *   "频繁失误时表情一闪一闪"。
+   */
+  function playInstant(id, params, ttlMs) {
+    if (!id) return;
+    const again = isAlive("instant", id);
+    retire("instant", id);
+    activate("instant", id, params, ttlMs);
+    if (!again) debugLog("瞬时层 → " + id);
+  }
+
+  /**
+   * 把一份参数表写到模型上。
+   *
+   * 这几行是照抄库自己的做法（vendor 里 ExpressionMotion.doUpdateParameters）。
+   * 照抄而不是自己发明，是因为：同一个 exp3，用库播和用我们播必须长得一样，
+   * 否则每换一个模型就得重新调一遍。所以连它的脾气也照抄 ——
+   *   ① Blend 只认 "Multiply" / "Overwrite" 两个字符串，
+   *      其余（含 "Add"、含没写、含写错）一律按 Add 处理；
+   *   ② 三个写入方法都带第三个参数 weight，库本来就支持"按权重混合"，
+   *      所以淡入淡出不用自己插值，把重量从 0 爬到 1 就行。
+   */
+  function applyParams(cm, params, weight) {
+    for (const p of params) {
+      try {
+        switch (p.blend) {
+          case "Multiply":  cm.multiplyParameterValueById(p.id, p.value, weight); break;
+          case "Overwrite": cm.setParameterValueById(p.id, p.value, weight); break;
+          default:          cm.addParameterValueById(p.id, p.value, weight); break;
+        }
+      } catch (e) { /* 单个参数写不进去，不该拖累这一层的其它参数 */ }
+    }
+  }
+
+  /** 每帧一次：推进权重 → 清掉退完的 → 从低层到高层应用 */
+  function composeLayers() {
+    const cm = coreModel();
+    const now = performance.now();
+    if (!cm || units.length === 0) { lastComposeAt = 0; return; }
+
+    // 帧间隔得自己算（库的 beforeModelUpdate 钩子不带参数）。
+    // 上限 100 毫秒：卡一下不该让权重一帧跳到底，那看起来就是"啪"地切过去。
+    const dt = lastComposeAt ? Math.min(now - lastComposeAt, 100) : 16;
+    lastComposeAt = now;
+
+    const hadInstant = units.some(function (u) { return u.kind === "instant"; });
+
+    for (const u of units) {
+      if (u.dieAt > 0 && now > u.dieAt) u.target = 0;
+      const diff = u.target - u.weight;
+      const step = dt / (u.target === 1 ? FADE_IN_MS : FADE_OUT_MS);
+      u.weight = Math.abs(diff) <= step ? u.target : u.weight + (diff > 0 ? step : -step);
+    }
+
+    units = units.filter(function (u) { return !(u.target === 0 && u.weight <= 0.001); });
+
+    // 低层先写、高层后写 —— Overwrite 型的参数因此天然是"高层说了算"
+    const order = units.slice().sort(function (a, b) {
+      return LAYER_ORDER[a.kind] - LAYER_ORDER[b.kind];
+    });
+    for (const u of order) {
+      if (u.weight > 0.001) applyParams(cm, u.params, u.weight);
+    }
+
+    // 瞬时层全退完了 → 让动作回到待机。
+    //   动作和表情是解耦的两条线，但"什么时候该回待机"只有这里知道。
+    if (hadInstant && !units.some(function (u) { return u.kind === "instant"; })) playIdle();
   }
 
   /** 动作（motion）：传进来的是标识，也就是"组名"——库会从这一组里随机挑一个播 */
@@ -694,101 +842,6 @@
     } catch (e) {
       fail("动作播放失败：" + name + " → " + e.message);
     }
-  }
-
-  /**
-   * 常态表情：由连击区间决定，**一直保持**。
-   * 关键在"不设 resetTimer" —— 这就是"常态"和"瞬时"的全部区别：
-   * 同一个 exp3 文件，放这儿就一直挂着，放瞬时那边就到期撤掉。
-   */
-  function setSteady(name) {
-    steadyExpression = name || "";
-    if (!steadyExpression) return;
-    debugLog("常态表情 → " + steadyExpression);
-    model.expression(steadyExpression).catch(function () { });
-  }
-
-  // 表情请求排队：同一时刻只让一个 expression 调用在"飞"。
-  // 老手坑：pixi-live2d-display 的 expressionManager 被同时调两次会互相打架
-  //   （前一个还在加载文件，后一个就直接返回 false），表现出来就是"连续失误时表情时有时无"。
-  let expressionBusy = false;
-  let pendingExpression = null;
-
-  /**
-   * 请求播放一个表情，三种情况分开处理：
-   *   ① 这个表情已经在显示 → 不重播，只把"回待机的时刻"往后推（频繁失误时正是这种情况）
-   *   ② 上一个请求还在飞   → 只记住最新的那一个，等它结束再播（不打架、不堆积）
-   *   ③ 空闲              → 直接播
-   */
-  function requestExpression(name) {
-    if (!name) return;
-
-    const em = expressionManager();
-
-    if (!expressionBusy && currentExpressionName(em) === name) {
-      armResetTimer();
-      debugLog("表情「" + name + "」已在显示，延长 " + expressionDurationMs + " 毫秒");
-      return;
-    }
-
-    if (expressionBusy) { pendingExpression = name; return; }
-
-    runExpressionQueue(name);
-  }
-
-  async function runExpressionQueue(name) {
-    expressionBusy = true;
-    try {
-      while (name) {
-        pendingExpression = null;
-        await playExpression(name);
-        name = pendingExpression;      // 排队期间来的新请求：只取最后一个
-      }
-    } finally {
-      expressionBusy = false;
-    }
-  }
-
-  async function playExpression(name) {
-    if (!model || !name) { fail("表情名为空（检查 config.json）"); return; }
-
-    const info = modelPatchInfo();
-    const em = expressionManager();
-
-    try {
-      // model.expression() 返回 Promise<boolean>，但 false 有三种完全不同的原因：
-      //   ① 名字不存在 ② 这个表情已经就是当前表情（无害）③ 文件加载失败 / 上一次还在加载中（竞态）
-      if (await model.expression(name)) return onExpressionStarted(name);
-
-      // ② 已经在显示中 → 当成成功：不重播，只把显示时间续上
-      if (currentExpressionName(em) === name) {
-        armResetTimer();
-        debugLog("表情「" + name + "」已在显示，延长 " + expressionDurationMs + " 毫秒");
-        return;
-      }
-
-      // ③ 竞态：上一次可能还在加载，稍等再试一次
-      await new Promise(r => setTimeout(r, 150));
-      if (await model.expression(name)) return onExpressionStarted(name);
-
-      // 到这里就是真的失败：把该表情的文件也报出来，方便判断是"路径取不到"还是"文件内容有问题"
-      const def = em && em.definitions
-        ? em.definitions.find(d => (d.Name || d.name) === name)
-        : null;
-      const file = def ? (def.File || def.file) : "（找不到该表情的定义）";
-
-      fail("表情「" + name + "」没能播放。\n" +
-           "对应文件：" + file + "\n" +
-           "已注册 " + info.defs.length + " 个：" + info.defs.join("、"));
-    } catch (e) {
-      fail("表情播放异常：" + name + " → " + e.message);
-    }
-  }
-
-  /** 表情开始播放后：安排到点自动回到待机（提示只在调试模式下显示） */
-  function onExpressionStarted(name) {
-    debugLog("播放表情：" + name);
-    armResetTimer();
   }
 
   window.addEventListener("resize", () => {
