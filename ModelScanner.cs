@@ -19,11 +19,11 @@ public sealed record ModelResource(
     bool Registered,                    // 是否由入口文件注册过
     IReadOnlyList<string> Files);       // 相对模型目录的路径（动作组可能多个）
 
-/// <summary>一次扫描的结果</summary>
+/// <summary>一次扫描的结果,包括表情，动作类和扫描中遇到的问题</summary>
 public sealed record ModelScanResult(
     IReadOnlyList<ModelResource> Expressions,
     IReadOnlyList<ModelResource> Motions,
-    IReadOnlyList<string> Problems);    // 扫描中遇到的麻烦（人话，给界面显示）
+    IReadOnlyList<string> Problems);    // 扫描中遇到的麻烦（给界面显示）
 /// <summary>
 /// 存入表情组，动作组组
 /// </summary>
