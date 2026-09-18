@@ -453,6 +453,8 @@ public partial class OverlayWindow : Window
         var combo = RangeTestCombos[_rangeTestIndex % RangeTestCombos.Length];
         _rangeTestIndex++;
 
+        // 这里故意**绕过** OnComboUpdated 那道"只在打歌时喂"的门：
+        // 测试热键的目的就是不开游戏也能验证"区间 → 常态表情"这一整条链。
         var events = _tracker.Update(combo, combo);
         foreach (var evt in events) HandleEvent(evt);
 
@@ -518,6 +520,15 @@ public partial class OverlayWindow : Window
 
         DebugLog.Write("界面切换：" + scene.Value);
 
+        // 进入打歌 = 新的一局开始了 → 连击记忆清零。
+        // 不清的后果很实在：上一局打到 1399 结束，新局从 0 重新数，
+        // "0 < 1399" 会被连击状态机判成断连击 → 开局瞬间做一次假的失误反应。
+        if (scene.Value == GameScene.Playing)
+        {
+            _tracker.Reset();
+            DebugLog.Write("新的一局：连击记忆已清零");
+        }
+
         if (_pageReady)
             SendJson(new { type = "scene", scene = scene.Value.ToString() });
     }
@@ -550,6 +561,19 @@ public partial class OverlayWindow : Window
 
     private void OnComboUpdated(int combo, int maxCombo)
     {
+        // 门：连击状态机**只在打歌中被喂数据**。
+        //
+        // 为什么非要有这道门：Update 判断"断连击"的唯一依据是 **combo 比上次小**，
+        // 而这个判断只在打歌中成立。打歌之外 tosu 照样报连击 ——
+        // 结算画面停在最终连击值（1399），退出到选歌那一刻变成 0。
+        // 数字确实变小了，但那不是断连击，只是这条数据归零。
+        // 放进状态机就会凭空造出一个 Break → 失误表情/语音在选歌界面乱触发。
+        //
+        // 这里能直接读 Current，靠的是 TosuClient 的投递顺序：
+        // 每一包都是**先抛 SnapshotReceived、再抛 ComboUpdated**（见 TosuClient.RunAsync），
+        // 所以轮到连击时，界面状态已经是同一包数据解析出来的最新值，不会慢一拍。
+        if (_sceneTracker.Current != GameScene.Playing) return;
+
         var events = _tracker.Update(combo, maxCombo);
         if (events.Count == 0) return;
 
