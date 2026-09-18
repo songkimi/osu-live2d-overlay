@@ -53,6 +53,7 @@
   // 插件页面：不做任何"演示"的事，完全由 C# 侧的消息驱动
   //   C# → JS：{type:"init", modelUrl, idle, view, expressionDurationMs, debug, voice}
   //            {type:"layers", persistent:[{id, params}]}   ← 常驻层（页面就绪时下发一次）
+  //            {type:"scene", scene:"Playing"}              ← 界面切换（只通知，不规定怎么表现）
   //            {type:"steady", expression, params}          ← 常态层（连击区间变化时）
   //            {type:"combo", expression, params, combo, step}
   //            {type:"miss",  expression, params, combo}
@@ -435,6 +436,15 @@
       // 常驻层：整批替换（页面刚就绪、或者配置变了）
       case "layers":
         setPersistent(msg.persistent);
+        break;
+
+      // 界面切换：MainMenu / SongSelect / Playing / Result / Unknown
+      //
+      // **这里刻意什么都不做。**"每个界面显示什么、放在哪、多大、能不能拖"
+      // 是配置里的事（属于还没开工的 UI 层），现在没有配置可读。
+      // 页面只把这件事记进日志，等设置界面做出来之后再按配置表现。
+      case "scene":
+        debugLog("界面 → " + msg.scene);
         break;
 
       // 动作：和表情是两条独立的消息，页面这边各播各的

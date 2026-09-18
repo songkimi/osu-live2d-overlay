@@ -2,15 +2,14 @@
 // TosuClient.cs —— 数据层：从 tosu 拿 osu! 的实时状态
 //
 // 职责边界（和超市项目里的 Service 层一个道理）：
-//   本类只干一件事——连 WebSocket、解析 JSON、把"连击变了"这件事抛出去。
-//   它不认识界面、不认识 WPF，将来换成别的数据源（比如自己做内存读取）
-//   也不影响界面代码。
+//   本类负责"连 WebSocket、收包、把解析结果抛出去"，**不做任何字段解析** ——
+//   解析在 TosuJsonParser 里，因为那部分能在控制台测，而连网络这部分不能。
+//   所以这个文件里不该出现任何 JSON 字段名。
 //
-// 实测确认的数据路径：gameplay.combo.current / gameplay.combo.max
+// 实测确认的数据路径：见 TosuJsonParser 的说明。
 // ============================================================
 using System.Net.WebSockets;
 using System.Text;
-using System.Text.Json;
 
 namespace OsuLive2dOverlay;
 
@@ -20,6 +19,12 @@ public sealed class TosuClient
 
     /// <summary>连击变化：(当前连击, 最大连击)</summary>
     public event Action<int, int>? ComboUpdated;
+
+    /// <summary>
+    /// 每一包**能用的**数据都抛一次（界面状态、连击都在里面）。
+    /// 心跳包、半截包不会走到这儿 —— TosuJsonParser 对它们返回 null，这里直接跳过。
+    /// </summary>
+    public event Action<TosuSnapshot>? SnapshotReceived;
 
     /// <summary>连接状态文字，用于在界面上显示</summary>
     public event Action<string>? StatusChanged;
@@ -69,7 +74,11 @@ public sealed class TosuClient
                         FirstMessageReceived?.Invoke(json);
                     }
 
-                    TryParseCombo(json);
+                    var snapshot = TosuJsonParser.Parse(json);
+                    if (snapshot is null) continue;       // 心跳包 / 半截包：不是数据，跳过这一包
+
+                    SnapshotReceived?.Invoke(snapshot.Value);
+                    ComboUpdated?.Invoke(snapshot.Value.Combo, snapshot.Value.MaxCombo);
                 }
             }
             catch (OperationCanceledException)
@@ -85,29 +94,6 @@ public sealed class TosuClient
 
             try { await Task.Delay(3000, token); }
             catch (OperationCanceledException) { return; }
-        }
-    }
-
-    /// <summary>从一整包 JSON 里取出连击数；字段缺失或不是 JSON 就静默跳过</summary>
-    private void TryParseCombo(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            // 逐层 TryGetProperty：任何一层缺失都不会抛异常（比直接索引安全）
-            if (!root.TryGetProperty("gameplay", out var gameplay)) return;
-            if (!gameplay.TryGetProperty("combo", out var comboNode)) return;
-
-            int current = comboNode.TryGetProperty("current", out var c) ? c.GetInt32() : 0;
-            int max = comboNode.TryGetProperty("max", out var m) ? m.GetInt32() : 0;
-
-            ComboUpdated?.Invoke(current, max);
-        }
-        catch (JsonException)
-        {
-            // 心跳包/空包，忽略
         }
     }
 }

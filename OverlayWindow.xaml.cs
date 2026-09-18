@@ -84,6 +84,13 @@ public partial class OverlayWindow : Window
     /// </summary>
     private ExpressionCatalog _catalog = ExpressionCatalog.Empty;
 
+    /// <summary>
+    /// 界面状态机：把 tosu 报的 menu.state 翻译成"现在在哪个界面"。
+    /// 它只负责**知道**，不负责**表现** —— 每个界面显示什么、在哪、能不能拖，
+    /// 都是配置的事（属于将来的 UI 层），这个类一概不管。
+    /// </summary>
+    private readonly GameStateTracker _sceneTracker = new();
+
     private IntPtr _hwnd = IntPtr.Zero;
     private bool _isRunningMode = true;
     private bool _pageReady;
@@ -121,6 +128,7 @@ public partial class OverlayWindow : Window
         _voicePayload = BuildVoicePayload();
 
         _client.ComboUpdated += OnComboUpdated;
+        _client.SnapshotReceived += OnSnapshotReceived;
         _client.StatusChanged += text =>
         {
             DebugLog.Write("tosu：" + text);
@@ -468,6 +476,7 @@ public partial class OverlayWindow : Window
                     ShowStatus("模型已就绪" + (DebugLog.FilePath.Length > 0 ? $"（调试日志：{DebugLog.FilePath}）" : ""),
                                autoHide: true);
                     SendCurrentSteady();     // 页面刚起来，把当前的常态表情补给它
+                    SendCurrentScene();      // 以及"现在在哪个界面"
                     StartCursorTracking();
                     break;
 
@@ -493,6 +502,36 @@ public partial class OverlayWindow : Window
     /// 区间事件在程序启动那一刻就报过了，而那时页面还在加载、消息直接被丢掉 ——
     /// 不补这一下，角色会一直没有常态表情（要等玩家真跨过下一个区间才出现）。
     /// </summary>
+    /// <summary>
+    /// 每收到一包**能用的** tosu 数据就走这里。
+    ///
+    /// 注意「界面状态」和「连击」是两条独立的线：连击走 OnComboUpdated，
+    /// 这里只管界面切换，两者互不影响 —— 和"表情 / 语音 / 动作"三条线解耦是同一个思路。
+    /// </summary>
+    private void OnSnapshotReceived(TosuSnapshot snapshot)
+    {
+        // gameplay.gameMode == 3 表示"已经进游戏场景"（暂停时它也是 3）——
+        // 这是实测出来的判据：加载期间它是 0，所以能精确地把"还在加载"挡在外面，
+        // 不用像原先设想的那样"等 800 毫秒看状态稳不稳定"。
+        var scene = _sceneTracker.Update(snapshot.MenuState, snapshot.GameMode == 3);
+        if (scene is null) return;                   // 状态没变（含"还在加载"），什么都不用做
+
+        DebugLog.Write("界面切换：" + scene.Value);
+
+        if (_pageReady)
+            SendJson(new { type = "scene", scene = scene.Value.ToString() });
+    }
+
+    /// <summary>
+    /// 页面就绪时把"当前在哪个界面"补发一次。
+    /// 理由和常态表情那次一样：程序启动那一刻页面还在加载，消息直接被丢掉 ——
+    /// 不补这一下，页面会一直不知道自己该按哪个界面表现。
+    /// </summary>
+    private void SendCurrentScene()
+    {
+        SendJson(new { type = "scene", scene = _sceneTracker.Current.ToString() });
+    }
+
     private void SendCurrentSteady()
     {
         var evt = new ComboEvent(
