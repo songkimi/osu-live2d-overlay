@@ -44,5 +44,10 @@
                 Background="#CC7A2B2B" CornerRadius="0,0,8,8" Padding="10,4">
             <TextBlock x:Name="StatusText" Foreground="White" FontSize="12" />
         </Border>
+
+        <!-- 这里**故意不放**任何"接鼠标"的层：
+             本窗口里嵌着 WebView2（HwndHost），它会阻断所在区域的 WPF 命中测试，
+             放什么透明元素都收不到鼠标。接鼠标由 InteractionWindow 那个独立的
+             透明窗口负责 —— 见它的说明。 -->
     </Grid>
 </Window>

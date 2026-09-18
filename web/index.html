@@ -440,11 +440,13 @@
 
       // 界面切换：MainMenu / SongSelect / Playing / Result / Unknown
       //
-      // **这里刻意什么都不做。**"每个界面显示什么、放在哪、多大、能不能拖"
-      // 是配置里的事（属于还没开工的 UI 层），现在没有配置可读。
-      // 页面只把这件事记进日志，等设置界面做出来之后再按配置表现。
+      // 服务运行时每切一次界面就发一条，带三样东西：
+      //   scene     —— 现在在哪（只记日志，表现看下面两项）
+      //   show      —— 这个界面要不要显示角色（配置里"启用 + 配了模型"才算数）
+      //   character —— 角色站位（相对画布的比例位置 + 缩放），不显示时是 null
       case "scene":
-        debugLog("界面 → " + msg.scene);
+        debugLog("界面 → " + msg.scene + (msg.show === false ? "（不显示角色）" : "（显示角色）"));
+        applyScene(msg);
         break;
 
       // 动作：和表情是两条独立的消息，页面这边各播各的
@@ -655,6 +657,134 @@
     model.scale.set(s, s);
     model.x = w / 2 - (m.w * s) / 2 + view.offsetX * w;
     model.y = h - m.h * s + view.offsetY * h;
+  }
+
+  // ---------------- 渲染自检（排查用） ----------------
+
+  /**
+   * 把"模型到底画出来没有"变成一句话，发回 C# 写进日志 —— 省得为了看一眼诊断条反复跑游戏。
+   *
+   * 最有分量的是最后那项：**直接从渲染结果里数非透明像素**。
+   *   数出来是 0   → 模型真的一个像素都没画出来（渲染 / 纹理那一层的问题）
+   *   数出来大于 0 → 模型是画出来了的，看不见就属于窗口合成那一层
+   * 这两种情况的修法完全不同，所以必须先把它分开。
+   */
+  function renderSelfCheck() {
+    try {
+      const m = modelSize();
+      const s = baseScale * view.zoom;
+      const b = model.getBounds();
+      return "alpha=" + model.alpha +
+             " 缩放=" + model.scale.x.toFixed(4) +
+             " 位置=(" + Math.round(model.x) + "," + Math.round(model.y) + ")" +
+             " 显示尺寸=" + Math.round(m.w * s) + "x" + Math.round(m.h * s) +
+             " 包围盒=(" + Math.round(b.x) + "," + Math.round(b.y) + ") " +
+             Math.round(b.width) + "x" + Math.round(b.height) +
+             "｜舞台节点=" + app.stage.children.length +
+             "｜贴图=" + (model.internalModel && model.internalModel.textures
+                            ? model.internalModel.textures.length + " 张（模型定义里是 4 张）"
+                            : "?") +
+             "｜" + opaquePixelCheck();
+    } catch (e) {
+      return "自检失败：" + e.message;
+    }
+  }
+
+  /** 从渲染结果里数非透明像素：0 = 模型什么都没画出来 */
+  function opaquePixelCheck() {
+    try {
+      if (!app.renderer.extract) return "无 extract 插件";
+      const px = app.renderer.extract.pixels(model);
+      const m = modelSize();
+      const W = Math.max(1, Math.round(m.w)), H = Math.max(1, Math.round(m.h));
+
+      // 数非透明像素，同时记住它们落在哪个范围里 ——
+      // "有像素但只挤在很小一块"和"铺满整个画布"是两种完全不同的病。
+      let count = 0, minX = W, minY = H, maxX = -1, maxY = -1;
+      for (let y = 0; y < H; y += 2) {
+        const row = y * W;
+        for (let x = 0; x < W; x += 2) {
+          if (px[(row + x) * 4 + 3] > 0) {
+            count++;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      const total = px.length / 4;
+      const spread = maxX < 0
+        ? "（一个都没找到）"
+        : "分布在 (" + minX + "," + minY + ")→(" + maxX + "," + maxY + ")" +
+          " 占原始画布 " + (100 * (maxX - minX + 1) / W).toFixed(0) + "%×" +
+          (100 * (maxY - minY + 1) / H).toFixed(0) + "%";
+      return "非透明像素 " + count + "/" + total + "（每 4 个采 1 个）" + spread +
+             "｜WebGL=" + webglInfo();
+    } catch (e) {
+      return "像素提取失败：" + e.message;
+    }
+  }
+
+  // ---------------- 界面感知（每个界面一份档位） ----------------
+
+  /**
+   * 应用一条 scene 消息：该显示就显示、并摆到这一档的站位；不该显示就藏起来。
+   *
+   * 站位的语义和 view 完全一致（x / y 是相对画布宽高的比例，scale 是缩放倍数），
+   * 所以这里直接写进 view 再调 applyView() —— 位置算法只留一份，不重复实现。
+   *
+   * 每个界面那个"角度"字段暂时没用：绕轴心旋转要动模型的 pivot，
+   * 会连带影响位置计算和诊断条显示，留到"配置界面里拖角色"那一步一起做。
+   */
+  function applyScene(msg) {
+    if (!model || !app) return;
+
+    const show = msg.show !== false;      // 没带这个字段 = 显示（兼容老消息）
+    model.visible = show;
+
+    if (show && msg.character) {
+      view.zoom = msg.character.scale;
+      view.offsetX = msg.character.x;
+      view.offsetY = msg.character.y;
+      applyView();
+    }
+
+    // 排查用：应用完之后到底"是什么状态"。看不见角色时，这一行能区分
+    //   visible=false（消息要它藏）／scale=NaN（缩放算坏了）／位置跑到画布外（摆位错了）
+    const m0 = modelSize();
+    debugLog("场景应用：" + msg.scene + " show=" + show +
+             " character=" + JSON.stringify(msg.character) +
+             "｜visible=" + model.visible +
+             " zoom=" + view.zoom +
+             " scale=" + model.scale.x +
+             " 位置=(" + Math.round(model.x) + "," + Math.round(model.y) + ")" +
+             " 画布=" + app.renderer.width + "x" + app.renderer.height +
+             " 模型原始=" + Math.round(m0.w) + "x" + Math.round(m0.h));
+
+    updateDiag();
+
+    // 排查用：立刻采一次，2 秒后再采一次。
+    // 贴图是异步上传到 GPU 的，"刚切过去"和"过两秒"这两组数据一对比，
+    // 就能区分是"模型真的没画出来"还是"还没加载完" —— 这两者的修法完全不同。
+    // 渲染自检与画面快照**只在调试模式下跑**：
+    //   · 像素采样要把 3200 万像素走一遍，玩家版每次切界面都做纯属浪费
+    //   · 快照还会往磁盘写 PNG，不该出现在玩家机器上
+    // 留着它们是因为："角色看不见"这类问题，这是唯一能自查的手段 ——
+    // 一张快照就能分清"没画出来"和"画了但没显示到屏幕上"。
+    if (debugMode) {
+      post({ type: "log", text: "渲染自检（" + msg.scene + "，立刻）：" + renderSelfCheck() });
+      setTimeout(function () {
+        try {
+          post({ type: "log", text: "渲染自检（" + msg.scene + "，2 秒后）：" + renderSelfCheck() });
+          const shot = app.renderer.extract.canvas(app.stage);
+          post({ type: "snapshot", dataUrl: shot.toDataURL("image/png") });
+        } catch (e) {
+          post({ type: "log", text: "自检/快照失败：" + e.message });
+        }
+      }, 2000);
+    }
   }
 
   // ---------------- 动作与表情 ----------------

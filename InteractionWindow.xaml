@@ -1,0 +1,35 @@
+<!-- ============================================================
+     InteractionWindow.xaml —— "影子窗口"：完全透明，唯一职责是**把鼠标接住**。
+
+     为什么必须单独开一个窗口（而不是在主窗口里放一层透明 Border）：
+       主窗口里嵌着 WebView2，而 WebView2 是 HwndHost（原生子窗口）。
+       **HwndHost 会阻断它所在区域的 WPF 命中测试** —— 在那个区域里放什么 WPF 元素
+       都收不到鼠标。所以"接鼠标"这件事只能交给一个**不含原生子窗口**的窗口。
+
+     两个窗口的分工（这是 2026-09-18 折腾一整晚试出来的唯一稳定解）：
+       OverlayWindow     —— 渲染角色，**始终穿透** → WebGL 那层才会一直正常上屏
+       InteractionWindow —— 完全透明、**始终不穿透**，只负责接住鼠标 → 支持拖动窗口
+
+     为什么主窗口必须穿透：WebView2 内部的原生子窗口一旦被**清除** WS_EX_TRANSPARENT，
+     它的 WebGL 层就停止上屏（症状：页面文字看得见、角色看不见，而页面自己导出的快照
+     完好无损 —— 因为那是离屏渲染）。所以那个样式一次都不能去动。
+     ============================================================ -->
+<Window x:Class="OsuLive2dOverlay.InteractionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="osu-live2d-overlay 交互层"
+        Width="430" Height="620"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="#01000000"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize">
+    <!-- 背景是 #01000000，而不是 Transparent —— 这一条看着奇怪，但它**必须**这样：
+         WPF 的分层窗口在真机上对"完全透明"（alpha = 0）的区域**不做命中测试**，
+         鼠标会直接穿过去、窗口就拖不动了。alpha = 1（0.4% 不透明度）肉眼完全看不出来，
+         但足以让命中测试生效。
+         2026-09-18 实测：把这里改成 Transparent 之后，拖动立刻失效。 -->
+    <Grid x:Name="Root" Background="#01000000" />
+</Window>

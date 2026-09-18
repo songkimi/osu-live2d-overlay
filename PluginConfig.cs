@@ -26,6 +26,16 @@ public sealed class PluginConfig
     [JsonPropertyName("口型")] public MouthConfig Mouth { get; set; } = new();
     [JsonPropertyName("表现")] public PerformanceConfig Performance { get; set; } = new PerformanceConfig();
 
+    /// <summary>
+    /// 界面感知：四个界面各一份档位（显示什么、显示在哪、能不能点）。
+    ///
+    /// **可空是有意的**：null = 配置文件里没有这一段（老配置，或者第一次生成的模板）。
+    /// 不能直接写成 `= new()` —— 那样就分不清"用户从来没配过"和"用户配了、但四个界面都关掉"，
+    /// 而这两种情况的处理正好相反：前者要把原来的全局设置搬进来（不然升级后角色直接消失），
+    /// 后者要尊重用户关掉的决定。
+    /// </summary>
+    [JsonPropertyName("界面感知")] public SceneProfiles? Scenes { get; set; }
+
     /// <summary>是否让角色目光跟随鼠标。
     /// 说明：窗口是点击穿透的，WebView2 收不到鼠标事件，所以由 C# 侧读全局光标位置发给页面。</summary>
     [JsonPropertyName("目光跟随鼠标")] public bool FollowCursor { get; set; } = true;
@@ -57,9 +67,11 @@ public sealed class PluginConfig
                 return config;
             }
 
+            // 先生成默认值、再写盘：这样模板是一份**完整**的配置（含界面感知那一段），
+            // 而不是一堆 null —— 设置界面将来是直接读它来渲染的。
             var fresh = new PluginConfig();
-            File.WriteAllText(path, JsonSerializer.Serialize(fresh, Options));
             fresh.Normalize();
+            File.WriteAllText(path, JsonSerializer.Serialize(fresh, Options));
             return fresh;
         }
         catch
@@ -87,6 +99,62 @@ public sealed class PluginConfig
         Voice.Emotions ??= new List<EmotionConfig>();
 
         foreach (var trigger in ComboTriggers) trigger.Reaction ??= new ReactionConfig();
+
+        // 界面感知：老配置里没有这一段 → 用原来的全局模型与视图参数生成一份四档。
+        // 不能让它默认"四档全关"：这一段直接决定角色显示不显示，那样老用户升级后角色会消失。
+        // 有这一段就照它来（哪怕四档全关，那是用户自己的决定），只补齐可能被手改坏的嵌套对象。
+        Scenes ??= BuildDefaultScenes();
+        NormalizeScenes();
+    }
+
+    /// <summary>
+    /// 生成默认的四份档位：都启用、都用全局模型入口与视图参数，窗口位置留空（窗口不动）。
+    /// 只在"配置文件里还没有界面感知这一段"时用 —— 也就是一次迁移。
+    /// </summary>
+    private SceneProfiles BuildDefaultScenes()
+    {
+        var entry = Model.Entry ?? "";
+        var usable = !string.IsNullOrWhiteSpace(entry);
+
+        SceneProfile Make(bool clickThrough) => new()
+        {
+            Enabled = usable,
+            Model = entry,
+            Character = new CharacterPlacement
+            {
+                X = View.OffsetX,
+                Y = View.OffsetY,
+                Scale = View.Zoom <= 0 ? 1.0 : View.Zoom,
+                AngleDegrees = 0
+            },
+            // 窗口位置故意不填（X / Y 留 null）→ 窗口保持现在待的地方，不因为升级跳走
+            Window = new WindowPlacement { ClickThrough = clickThrough }
+        };
+
+        return new SceneProfiles
+        {
+            MainMenu = Make(clickThrough: false),
+            SongSelect = Make(clickThrough: false),
+            Playing = Make(clickThrough: true),      // 打歌必须穿透，不然鼠标点不到谱面
+            Result = Make(clickThrough: false)
+        };
+    }
+
+    /// <summary>补齐四份档位里可能缺失的嵌套对象（配置是界面生成的，但手改 JSON 时什么都可能出现）</summary>
+    private void NormalizeScenes()
+    {
+        var scenes = Scenes!;
+        scenes.MainMenu ??= new SceneProfile();
+        scenes.SongSelect ??= new SceneProfile();
+        scenes.Playing ??= new SceneProfile();
+        scenes.Result ??= new SceneProfile();
+
+        foreach (var profile in new[] { scenes.MainMenu, scenes.SongSelect, scenes.Playing, scenes.Result })
+        {
+            profile.Window ??= new WindowPlacement();
+            profile.Character ??= new CharacterPlacement();
+            profile.Model ??= "";
+        }
     }
 }
 

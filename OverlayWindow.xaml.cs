@@ -74,6 +74,13 @@ public partial class OverlayWindow : Window
     private readonly PluginConfig _config;
     private readonly TosuClient _client = new();
     private readonly ComboTracker _tracker;
+
+    /// <summary>
+    /// 界面档位：四个界面各一份（显示什么、显示在哪、能不能点）。
+    /// 服务运行时只用它一个：`Get(当前场景)` → `IsUsable` 决定显不显示。
+    /// </summary>
+    private readonly SceneProfiles _scenes;
+
     private readonly CancellationTokenSource _cts = new();
     private readonly string _webDir;
 
@@ -93,6 +100,19 @@ public partial class OverlayWindow : Window
 
     private IntPtr _hwnd = IntPtr.Zero;
     private bool _isRunningMode = true;
+
+    /// <summary>
+    /// 上一次真正应用到窗口上的穿透状态。用来判断"这次的穿透状态是不是变了" ——
+    /// 只有真变了才需要强制重合成一次（见 NudgeRepaint）。
+    /// 初值 true 与启动时"还不知道在哪个界面"的默认选择一致，免得启动就抖一下。
+    /// </summary>
+    private bool _clickThroughApplied = true;
+
+    /// <summary>
+    /// 影子窗口：专门负责接鼠标。本窗口里放透明元素是接不到鼠标的 ——
+    /// WebView2 是 HwndHost，会阻断它所在区域的 WPF 命中测试（见 InteractionWindow 的说明）。
+    /// </summary>
+    private InteractionWindow? _interaction;
     private bool _pageReady;
     private System.Windows.Threading.DispatcherTimer? _cursorTimer;
     private Point _lastCursorSent = new(double.NaN, double.NaN);
@@ -115,6 +135,9 @@ public partial class OverlayWindow : Window
             _config.ComboTriggers.Select(t => t.Threshold),
             _config.Ranges.Select(r => new ComboRange(r.Min, r.Max ?? int.MaxValue)));
 
+        // 界面档位：配置加载时已经保证非空（老配置会被迁移成四档），这里只是兜底
+        _scenes = _config.Scenes ?? new SceneProfiles();
+
         DebugLog.Start(_config.DebugMode);
 
         // 配置体检：门槛配反了不会崩，但"小额"那一档就永远轮不到 —— 在日志里说一声，
@@ -129,6 +152,15 @@ public partial class OverlayWindow : Window
 
         _client.ComboUpdated += OnComboUpdated;
         _client.SnapshotReceived += OnSnapshotReceived;
+
+        // tosu 断了（osu 退出 / tosu 自己关了）→ 界面状态回到"不知道"。
+        // 不这么做的话，角色会停在上一个界面不动 —— "关掉游戏、角色还挂在屏幕上"就是这个原因：
+        // 断开之后没有任何数据再推过来，状态机自己永远不会变。
+        _client.Disconnected += () =>
+        {
+            _sceneTracker.Update(null, false);
+            ApplyScene();
+        };
         _client.StatusChanged += text =>
         {
             DebugLog.Write("tosu：" + text);
@@ -145,6 +177,18 @@ public partial class OverlayWindow : Window
         // 默认停在屏幕右侧（正是"游戏右边"）
         Left = SystemParameters.WorkArea.Right - Width - 40;
         Top = SystemParameters.WorkArea.Top + 120;
+
+        // 影子窗口：和悬浮窗同位置同尺寸，专门负责接鼠标、把它变成"拖动窗口"。
+        // 为什么要单独一个窗口：本窗口里嵌着 WebView2（HwndHost），它会阻断所在区域的
+        // WPF 命中测试 —— 在本窗口里放什么透明元素都接不到鼠标。
+        _interaction = new InteractionWindow();
+        _interaction.Dragged += OnInteractionDragged;
+        LocationChanged += (_, _) => SyncInteractionWindow();
+        SizeChanged += (_, _) => SyncInteractionWindow();
+        Closed += (_, _) =>
+        {
+            try { _interaction?.Close(); } catch { /* 关窗时的异常不值得管 */ }
+        };
 
         ApplyMode();
         RegisterHotKey(_hwnd, HOTKEY_TOGGLE_MODE, MOD_CONTROL | MOD_ALT, VK_T);
@@ -185,10 +229,17 @@ public partial class OverlayWindow : Window
             // 第二个参数是语音的关键：WebView2 默认沿用 Chromium 的策略 —— 不允许
             //   "没有用户手势"的媒体自动播放。而这个窗口是点击穿透的，WebView2 永远等不到
             //   一次点击或按键，不加它语音会一句都放不出来（play() 直接被拒绝）。
+            // 后两个参数是 2026-09-18 排查"角色看不见"时加的，**它们不是最终定案的解法**
+            //   （真正成因是：主窗口不穿透时 WebView2 的原生子窗口样式被清除 → WebGL 停止上屏；
+            //     现在由"主窗口运行期恒穿透 + 独立的影子窗口接鼠标"解决，见 InteractionWindow）。
+            // 留着是因为这两个都在防"窗口被别的窗口盖住时渲染被挂起"这一类事 ——
+            //   osu 全屏时本窗口经常处于被覆盖状态，两种保护都无害，也可能省掉一次偶发故障。
             var options = new CoreWebView2EnvironmentOptions
             {
                 AdditionalBrowserArguments =
-                    "--enable-unsafe-swiftshader --autoplay-policy=no-user-gesture-required"
+                    "--enable-unsafe-swiftshader --autoplay-policy=no-user-gesture-required " +
+                    "--disable-direct-composition " +
+                    "--disable-features=CalculateNativeWinOcclusion"
             };
 
             // 用户数据目录用 WebView2 的默认位置（exe 同级的 osu-live2d-overlay.exe.WebView2）
@@ -196,6 +247,10 @@ public partial class OverlayWindow : Window
             DebugLog.Write("WebView2：环境已创建，开始 EnsureCoreWebView2Async");
             await Web.EnsureCoreWebView2Async(environment);
             DebugLog.Write("WebView2：控件已就绪");
+
+            // WebView2 的子窗口到这一刻才存在 → 补一次样式设置，让它们也被设成穿透。
+            // （不然在 osu 没开、场景一直不变的情况下就没人去碰它们，鼠标会被 WebView2 吃掉。）
+            ApplyMode();
             var core = Web.CoreWebView2;
 
             core.Settings.AreDefaultContextMenusEnabled = false;
@@ -491,6 +546,16 @@ public partial class OverlayWindow : Window
                     DebugLog.Write("页面错误：" + text);
                     ShowStatus("页面错误：" + text, autoHide: false);
                     break;
+
+                // 排查用：页面导出的画面快照（base64 PNG）→ 存成文件。
+                // "看不见角色"这类问题，看一张图比看一串数字快得多。
+                // 只在调试模式下收：玩家机器上不该凭空多出一个每次都写文件的通道。
+                case "snapshot":
+                    if (_config.DebugMode &&
+                        root.TryGetProperty("dataUrl", out var shot) &&
+                        shot.GetString() is { } dataUrl)
+                        SaveSnapshot(dataUrl);
+                    break;
             }
         }
         catch
@@ -518,7 +583,8 @@ public partial class OverlayWindow : Window
         var scene = _sceneTracker.Update(snapshot.MenuState, snapshot.GameMode == 3);
         if (scene is null) return;                   // 状态没变（含"还在加载"），什么都不用做
 
-        DebugLog.Write("界面切换：" + scene.Value);
+        DebugLog.Write($"界面切换：{scene.Value}（menu.state={Text(snapshot.MenuState)}，" +
+                       $"gameMode={Text(snapshot.GameMode)}）");
 
         // 进入打歌 = 新的一局开始了 → 连击记忆清零。
         // 不清的后果很实在：上一局打到 1399 结束，新局从 0 重新数，
@@ -529,19 +595,111 @@ public partial class OverlayWindow : Window
             DebugLog.Write("新的一局：连击记忆已清零");
         }
 
-        if (_pageReady)
-            SendJson(new { type = "scene", scene = scene.Value.ToString() });
+        ApplyScene();
+    }
+
+    /// <summary>把可空的 tosu 字段打成能读的日志文字（"缺失" = 这一包里根本没读到）</summary>
+    private static string Text(int? value) => value?.ToString() ?? "缺失";
+
+    /// <summary>
+    /// 把页面发来的画面快照（base64 data URL）存成 PNG，放在和日志同一个目录里。
+    /// 只在排查时用 —— 页面每次切界面都会顺手导一张，出问题时打开就能看到"当时画的是什么"。
+    /// </summary>
+    private static void SaveSnapshot(string dataUrl)
+    {
+        try
+        {
+            var comma = dataUrl.IndexOf(',');
+            if (comma < 0) return;
+
+            var bytes = Convert.FromBase64String(dataUrl[(comma + 1)..]);
+            var dir = Path.Combine(Path.GetTempPath(), "osu-live2d-overlay");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"snapshot-{DateTime.Now:HHmmss}.png");
+            File.WriteAllBytes(path, bytes);
+            DebugLog.Write("画面快照已保存：" + path);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("画面快照保存失败：" + ex.Message);
+        }
     }
 
     /// <summary>
-    /// 页面就绪时把"当前在哪个界面"补发一次。
+    /// 把"当前界面该长什么样"落到页面和窗口上。
+    /// 两个入口都走这里：场景真的变了（OnSnapshotReceived），以及页面刚就绪要补发（SendCurrentScene）。
+    ///
+    /// 用的是 Get + IsUsable 这**两个**判断，它们回答的是不同的问题：
+    ///   Get(场景) == null   → 这个场景根本没有档位（osu 没开 / 认不出的界面）→ 不显示
+    ///   IsUsable == false   → 有档位，但用户没启用或没配模型          → 不显示
+    /// </summary>
+    private void ApplyScene()
+    {
+        // **线程**：这个方法是从 tosu 的接收线程调进来的（OnSnapshotReceived 走 WebSocket 回调），
+        // 而窗口位置、窗口可见性这些 WPF 属性**只有 UI 线程能碰** —— 跨线程访问会抛
+        // InvalidOperationException，那个异常又会被 WS 循环的 catch 吞掉（只剩一句"连接失败"），
+        // 于是窗口行为看起来时对时错、还查不出原因。
+        // 所以在入口统一调度一次，方法体里就都能按"我在 UI 线程"来写。
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => ApplyScene());
+            return;
+        }
+
+        var scene = _sceneTracker.Current;
+        var profile = _scenes.Get(scene);
+        var usable = profile is { IsUsable: true };
+
+        DebugLog.Write($"界面表现：{scene} → " + (usable
+            ? $"显示角色（模型 {profile!.Model}｜穿透 {profile.Window.ClickThrough}）"
+            : "不显示角色") + $"（页面就绪={_pageReady}）");
+
+        if (_pageReady)
+        {
+            SendJson(new
+            {
+                type = "scene",
+                scene = scene.ToString(),
+                show = usable,
+                // 站位只在"要显示"的时候才有意义。不显示时发 null，页面按"维持原样"处理 ——
+                // 免得隐藏期间位置被清成 0，下次显示时角色先闪一下再跳回去。
+                character = usable ? new
+                {
+                    x = profile!.Character.X,
+                    y = profile.Character.Y,
+                    scale = profile.Character.Scale,
+                    angle = profile.Character.AngleDegrees
+                } : null
+            });
+        }
+
+        if (profile is not null) ApplyWindowPlacement(profile);
+
+        ApplyMode();      // 穿透/交互跟着模式与当前档位走（见 ShouldClickThrough）
+    }
+
+    /// <summary>
+    /// 把档位里的窗口位置与尺寸应用到窗口上。
+    /// **四个值都可能是"没设过"（null）**——那就保持窗口现在待的地方、现在的大小：
+    /// 用户没调过时，程序自己的默认摆放与 OverlayWindow.xaml 里的尺寸说了算，
+    /// 而且调整模式里拖过 / 缩过的窗口不该在切换界面时被改回去。
+    /// </summary>
+    private void ApplyWindowPlacement(SceneProfile profile)
+    {
+        var w = profile.Window;
+
+        if (w.Width is { } width && width > 0 && Math.Abs(Width - width) > 0.5) Width = width;
+        if (w.Height is { } height && height > 0 && Math.Abs(Height - height) > 0.5) Height = height;
+        if (w.X is { } x && Math.Abs(Left - x) > 0.5) Left = x;
+        if (w.Y is { } y && Math.Abs(Top - y) > 0.5) Top = y;
+    }
+
+    /// <summary>
+    /// 页面就绪时把"当前界面该长什么样"补发一次。
     /// 理由和常态表情那次一样：程序启动那一刻页面还在加载，消息直接被丢掉 ——
     /// 不补这一下，页面会一直不知道自己该按哪个界面表现。
     /// </summary>
-    private void SendCurrentScene()
-    {
-        SendJson(new { type = "scene", scene = _sceneTracker.Current.ToString() });
-    }
+    private void SendCurrentScene() => ApplyScene();
 
     private void SendCurrentSteady()
     {
@@ -631,6 +789,24 @@ public partial class OverlayWindow : Window
         }
     }
 
+    // ---------------- 运行期拖动窗口（由影子窗口转发过来） ----------------
+
+    /// <summary>
+    /// 影子窗口报告"鼠标拖了多远" → 把真正的悬浮窗挪过去，并让影子窗口跟上。
+    ///
+    /// 只有"不穿透"的界面（选歌 / 结算）才会走到这里：打歌时影子窗口是隐藏的，
+    /// 鼠标本来就该留给 osu（想拖就按 Ctrl+Alt+T 进调整模式）。
+    ///
+    /// 拖动结果目前只在内存里：真正写回配置要配合"停服务时询问是否保存"那套
+    /// 待保存调整机制（定稿 §3.6.2），属于下一步。
+    /// </summary>
+    private void OnInteractionDragged(double dx, double dy)
+    {
+        Left += dx;
+        Top += dy;
+        SyncInteractionWindow();
+    }
+
     // ---------------- 状态提示（会被 WebView2 遮住，所以只在调整模式/出错时看得到） ----------------
 
     private System.Windows.Threading.DispatcherTimer? _statusTimer;
@@ -664,7 +840,21 @@ public partial class OverlayWindow : Window
 
     private void ApplyMode()
     {
-        ApplyExStyleToWindowTree(_hwnd, _isRunningMode);
+        // **悬浮窗本身永远穿透**（运行模式下）—— 这是 WebGL 能上屏的前提：
+        //   WebView2 内部的原生子窗口一旦被清除 WS_EX_TRANSPARENT，它的 WebGL 层就停止上屏
+        //   （症状是"页面文字看得见、角色看不见"，而页面自导快照完好）。
+        //   所以运行模式下这个样式**一次都不去动**。
+        //   调整模式例外：那时 WebView2 是隐藏的，窗口要能接鼠标才拖得动虚线框。
+        var clickThrough = ShouldClickThrough();
+        var modeChanged = clickThrough != _clickThroughApplied;
+        _clickThroughApplied = clickThrough;
+
+        ApplyExStyleToWindowTree(_hwnd, clickThrough);
+
+        DebugLog.Write($"窗口：模式={(_isRunningMode ? "运行" : "调整")} " +
+                       $"穿透={clickThrough} 页面={Web.Visibility} " +
+                       $"位置=({Left:0},{Top:0}) 尺寸={Width:0}x{Height:0}" +
+                       (modeChanged ? "（穿透状态刚变过）" : ""));
 
         // WebView2 是原生窗口，WPF 元素盖不到它上面 → 调整时先把它藏起来，露出虚线框
         if (_isRunningMode)
@@ -674,31 +864,146 @@ public partial class OverlayWindow : Window
         }
         else
         {
-            AdjustHint.Text =
-                $"拖动移动 · 右下角缩放\n当前视图：缩放 {_config.View.Zoom:0.00}，上下 {_config.View.OffsetY:0.00}，左右 {_config.View.OffsetX:0.00}";
+            // 提示里读的是**当前界面那一档**的站位：界面感知接管之后，全局那套视图参数
+            // 只是老配置的迁移来源，不再是运行时的权威值 —— 还显示它会把改配置的人带偏。
+            var character = _scenes.Get(_sceneTracker.Current)?.Character;
+            AdjustHint.Text = character is null
+                ? "拖动移动 · 右下角缩放"
+                : $"拖动移动 · 右下角缩放\n当前界面站位：缩放 {character.Scale:0.00}，左右 {character.X:0.00}，上下 {character.Y:0.00}";
             Web.Visibility = Visibility.Hidden;
             AdjustLayer.Visibility = Visibility.Visible;
+        }
+
+        // "能不能点"由影子窗口负责：它不含原生子窗口，WPF 命中测试在它身上才有效。
+        // 调整模式下它必须让位 —— 那时是虚线框（本窗口）在接鼠标。
+        SyncInteractionWindow(show: _isRunningMode && ShouldInteract());
+    }
+
+    /// <summary>
+    /// 现在这个界面**该不该能交互**（决定影子窗口显示不显示）。
+    ///
+    /// 注意这和"悬浮窗穿不穿透"是两件事：悬浮窗永远穿透（否则 WebGL 不上屏），
+    /// 而"能不能点"由影子窗口决定。定稿 §四 的交互模式（打歌＝穿透，选歌 / 结算＝可交互）
+    /// 落到的就是这里。
+    /// </summary>
+    private bool ShouldInteract()
+        => _scenes.Get(_sceneTracker.Current)?.Window.ClickThrough == false;
+
+    /// <summary>让影子窗口跟着悬浮窗走：位置、尺寸、以及该不该显示</summary>
+    private void SyncInteractionWindow(bool? show = null)
+    {
+        if (_interaction is null) return;
+
+        try
+        {
+            _interaction.Left = Left;
+            _interaction.Top = Top;
+            _interaction.Width = Width;
+            _interaction.Height = Height;
+
+            if (show is { } want)
+            {
+                if (want && !_interaction.IsVisible)
+                {
+                    _interaction.Show();
+                    DebugLog.Write($"影子窗口：显示（位置=({Left:0},{Top:0}) 尺寸={Width:0}x{Height:0}）");
+                }
+                else if (!want && _interaction.IsVisible)
+                {
+                    _interaction.Hide();
+                    DebugLog.Write("影子窗口：隐藏");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("影子窗口同步失败：" + ex.Message);
         }
     }
 
     /// <summary>
-    /// 给本窗口以及**所有子窗口**（含 WebView2 的原生子窗口）设置扩展样式。
-    /// 只设顶层窗口是不够的：WebView2 的子窗口自己处理鼠标，会把点击"吃掉"。
+    /// 强制这个分层窗口重新合成一次。
+    ///
+    /// 为什么需要（2026-09-18 真机踩到的）：
+    ///   主窗口是 AllowsTransparency 的**分层窗口**，而 WebView2 内部有两套合成路径 ——
+    ///   HTML（DOM）一套、WebGL 画布另一套。**切换穿透状态之后，WebGL 那一层有时不会被
+    ///   重新合成**，症状非常迷惑：
+    ///     · 页面里的文字看得见（DOM 正常），角色却不见了（WebGL 没合成）
+    ///     · 可页面自己导出的画面快照里角色完好无损（渲染是好的，只是没上屏）
+    ///   而"打歌界面能看到角色"只是因为刚切过穿透，合成被顺带刷新了。
+    ///
+    /// 做法：把窗口尺寸碰一下再改回来 —— Windows 会因此重算并重新合成这个窗口，
+    /// 同时也会触发页面的 ResizeObserver 重排一次，两套合成路径一起被叫醒。
+    /// </summary>
+    private void NudgeRepaint()
+    {
+        try
+        {
+            // ① 先摇一下 WebView2 控件自己的可见性 —— 这一下直接打在它的上屏通道上。
+            //    （只碰窗口尺寸是不够的：那只能让 DWM 重算外层，WebView2 内部那一层
+            //      照样可以是"渲染了但不上屏"的状态。）
+            if (Web.Visibility == Visibility.Visible)
+            {
+                Web.Visibility = Visibility.Hidden;
+                Web.Visibility = Visibility.Visible;
+            }
+
+            // ② 再碰一下窗口尺寸：让页面的 ResizeObserver 重排一次、DWM 重算这个分层窗口
+            var w = Width;
+            Width = w + 1;
+            Width = w;
+
+            DebugLog.Write("穿透状态变了 → 已强制窗口重合成一次");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("强制重合成失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 这次该不该点击穿透？三个来源按优先级排：
+    ///   · 调整模式（热键解除锁定）→ 一律**不穿透**，否则鼠标都收不到，虚线框没法拖
+    ///   · 运行模式 → 穿透。**悬浮窗本身永远穿透**是这个方案的核心：WebView2 内部的
+    ///     原生子窗口一旦被清除 WS_EX_TRANSPARENT，WebGL 那层就停止上屏。
+    ///   · 于是"能不能交互"完全交给影子窗口（见 ShouldInteract / InteractionWindow）
+    /// </summary>
+    private bool ShouldClickThrough()
+    {
+        if (!_isRunningMode) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// 设置点击穿透。
+    ///
+    /// **顶层窗口按需要切换，子窗口（WebView2 内部那些原生窗口）永远保持穿透** ——
+    /// 这条是 2026-09-18 真机踩出来的，别改回去：
+    ///   子窗口身上的 WS_EX_TRANSPARENT 一旦被**清除**，WebView2 的 WebGL 那层就不再上屏。
+    ///   症状极具迷惑性 —— 页面里的文字（DOM）看得见、角色（WebGL）看不见，
+    ///   而页面自己导出的画面快照完好无损（离屏渲染照跑，只是没画到屏幕上）。
+    ///   于是表现成"打歌（穿透）正常，选歌 / 结算（不穿透）丢角色"。
+    ///
+    /// 为什么子窗口保持穿透也够用：鼠标先经过 WebView2 的子窗口（穿透）到达顶层窗口，
+    ///   · 打歌：顶层也穿透 → 鼠标一路交给 osu
+    ///   · 选歌 / 结算：顶层不穿透 → 鼠标停在顶层窗口上，用户能拖动窗口（"可交互"要的就是这个）
+    /// 代价只有一个：选歌时点不到插件窗口盖住的那一片 osu 界面 ——
+    ///   窗口只有 430×620，挪开就行，"允许交互"本来就有这个取舍。
     /// </summary>
     private void ApplyExStyleToWindowTree(IntPtr root, bool clickThrough)
     {
-        void Apply(IntPtr h)
+        void Apply(IntPtr h, bool transparent)
         {
             if (h == IntPtr.Zero) return;
             int ex = GetWindowLong(h, GWL_EXSTYLE);
             ex |= WS_EX_NOACTIVATE;
-            if (clickThrough) ex |= WS_EX_TRANSPARENT;
+            if (transparent) ex |= WS_EX_TRANSPARENT;
             else ex &= ~WS_EX_TRANSPARENT;
             SetWindowLong(h, GWL_EXSTYLE, ex);
         }
 
-        Apply(root);
-        EnumChildWindows(root, (h, _) => { Apply(h); return true; }, IntPtr.Zero);
+        Apply(root, clickThrough);                                                          // 顶层：按界面切换
+        EnumChildWindows(root, (h, _) => { Apply(h, true); return true; }, IntPtr.Zero);     // 子窗口：永远穿透，别清除
     }
 
     // ---------------- 目光跟随鼠标 ----------------
