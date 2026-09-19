@@ -105,7 +105,7 @@ public sealed class PluginConfig
 
         Miss.SmallReaction ??= new ReactionConfig();
         Miss.BigReaction ??= new ReactionConfig();
-        Voice.Emotions ??= new List<EmotionConfig>();
+        Voice.Emotions ??= new List<string>();
 
         foreach (var trigger in ComboTriggers) trigger.Reaction ??= new ReactionConfig();
 
@@ -242,23 +242,95 @@ public sealed class VoiceConfig
     /// <summary>两次语音之间至少间隔多少毫秒（0 = 不限）</summary>
     [JsonPropertyName("最小间隔毫秒")] public int MinIntervalMs { get; set; } = 300;
 
-    /// <summary>情绪清单：名称 → 一批文件。同一情绪里有多个文件时会随机挑一个</summary>
-    [JsonPropertyName("情绪")] public List<EmotionConfig> Emotions { get; set; } = new();
+    /// <summary>
+    /// 情绪清单。**每一项就是一个子文件夹名**，情绪名 = 文件夹名。
+    ///
+    /// 只有一个填法（用户定的）：以前还支持「逐条列文件」和「另写子目录」两种，
+    /// 结果是界面上必须同时摆出"文件列表"和"选文件夹"两套控件，用户还得分清两者的关系 ——
+    /// 那是纯自找的复杂度。现在一个情绪 = 一个文件夹，界面只剩一件事：选文件夹 → 多一个情绪。
+    /// </summary>
+    [JsonPropertyName("情绪")]
+    [JsonConverter(typeof(EmotionNameListConverter))]
+    public List<string> Emotions { get; set; } = new();
 }
 
 /// <summary>
-/// 一类情绪（高兴 / 疑惑 / 伤心 …）。
-/// 填法有三种，越往下越省事：
-///   ① 写「文件」列表 —— 最明确，也最啰嗦
-///   ② 写「子目录」   —— 播 目录\子目录 下的所有音频
-///   ③ 什么都不写     —— 自动找 目录\名称 这个同名文件夹
-/// 所以文件多了以后，直接在语音目录里建「高兴」「伤心」这样的文件夹丢进去就行。
+/// 「情绪」的读取转换器：新写法是字符串数组，老写法是对象数组（名称 / 文件 / 子目录）。
+///
+/// 为什么需要它：老配置里写着情绪名，直接换成字符串数组会让它们**全部消失** ——
+/// 语音一声不响地不响了，而且看不出来是升级造成的。所以读的时候把老写法就地折成名字。
+///
+/// 只在读的时候生效；**写出来永远是字符串数组**（新写法）。
+/// 老写法里的「文件」列表没法自动变成文件夹（那些文件是平铺在语音目录根下的），
+/// 所以只能保住名字 —— 折叠后如果找不到同名文件夹，VoiceLibrary 会给出明确提示。
 /// </summary>
-public sealed class EmotionConfig
+internal sealed class EmotionNameListConverter : JsonConverter<List<string>>
 {
-    [JsonPropertyName("名称")] public string Name { get; set; } = "";
-    [JsonPropertyName("文件")] public List<string> Files { get; set; } = new();
-    [JsonPropertyName("子目录")] public string SubDirectory { get; set; } = "";
+    public override List<string> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var names = new List<string>();
+
+        if (reader.TokenType != JsonTokenType.StartArray)
+        {
+            reader.Skip();          // 既不是数组就整段跳过 —— 配置坏了也别崩
+            return names;
+        }
+
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+        {
+            switch (reader.TokenType)
+            {
+                case JsonTokenType.String:
+                    Add(names, reader.GetString());
+                    break;
+
+                case JsonTokenType.StartObject:
+                    using (var doc = JsonDocument.ParseValue(ref reader))
+                        Add(names, LegacyNameOf(doc.RootElement));
+                    break;
+
+                default:
+                    reader.Skip();
+                    break;
+            }
+        }
+
+        return names;
+    }
+
+    public override void Write(Utf8JsonWriter writer, List<string> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartArray();
+        foreach (var name in value ?? new List<string>()) writer.WriteStringValue(name);
+        writer.WriteEndArray();
+    }
+
+    private static void Add(List<string> names, string? name)
+    {
+        var trimmed = name?.Trim() ?? "";
+        if (trimmed.Length > 0) names.Add(trimmed);
+    }
+
+    /// <summary>老写法里挑一个名字出来：「名称」→「子目录」→「文件」第一个所在的文件夹</summary>
+    private static string? LegacyNameOf(JsonElement emotion)
+    {
+        foreach (var key in new[] { "名称", "子目录" })
+            if (emotion.TryGetProperty(key, out var text) && text.ValueKind == JsonValueKind.String)
+            {
+                var value = text.GetString()?.Trim() ?? "";
+                if (value.Length > 0) return Path.GetFileName(value.TrimEnd('\\', '/'));
+            }
+
+        if (emotion.TryGetProperty("文件", out var files) && files.ValueKind == JsonValueKind.Array)
+            foreach (var file in files.EnumerateArray())
+            {
+                if (file.ValueKind != JsonValueKind.String) continue;
+                var dir = Path.GetDirectoryName(file.GetString() ?? "");
+                if (!string.IsNullOrWhiteSpace(dir)) return Path.GetFileName(dir.TrimEnd('\\', '/'));
+            }
+
+        return null;
+    }
 }
 
 /// <summary>

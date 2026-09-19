@@ -65,26 +65,28 @@ public sealed class ComboTracker
     /// </summary>
     /// <param name="ranges"></param>
     /// <returns></returns>
-    public static List<(ComboRange A, ComboRange B)> FindOverlaps(IEnumerable<ComboRange> ranges)
+    public static List<(int IndexA, T A,int IndexB,T B)> FindOverlaps<T>(IEnumerable<T> items, Func<T, ComboRange> getRange)
     {
-        var list = ranges.ToList();
-        var conflicts = new List<(ComboRange A, ComboRange B)>();
+        var list = items.ToList();
+        var conflicts = new List<(int IndexA, T A, int IndexB, T B)>();
         for (int i = 0; i < list.Count; i++)
         {
             var a = list[i];
+            var ra = getRange(a);
             for (int j = i + 1; j < list.Count; j++)
             {
                 var b = list[j];
-                bool isOverlap = a.Min <= b.Max && b.Min <= a.Max;
+                var rb = getRange(b);
+                bool isOverlap = ra.Min <= rb.Max && rb.Min <= ra.Max;
                 if (isOverlap)
                 {
-                    conflicts.Add((a, b));
+                    conflicts.Add((i, a, j, b));
                 }
             }
-            
         }
         return conflicts;
     }
+
     /// <summary>
     /// 喂入新的连击数，返回这一瞬间需要处理的事件。
     /// 返回**空列表**表示什么都不用做（不是 null）。

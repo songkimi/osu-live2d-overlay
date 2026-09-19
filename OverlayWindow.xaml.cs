@@ -125,9 +125,25 @@ public partial class OverlayWindow : Window
     private readonly List<string> _voiceEmotionNames = new();   // 测试热键按顺序试听用
     private int _voiceTestIndex;
 
+    /// <summary>
+    /// XAML 里的默认窗口尺寸（构造时取一次）。
+    /// 它是"某个界面没设过宽/高"以及"窗口第一次出现"时的兜底尺寸 ——
+    /// 刻意**不**读当前 Width/Height：那会把上一个界面的尺寸借给下一个界面。
+    /// </summary>
+    private readonly (double Width, double Height) _defaultSize;
+
+    /// <summary>默认摆放距离屏幕右边 / 上边的留白（DIP）</summary>
+    private const double DefaultRightMargin = 40;
+    private const double DefaultTopMargin = 120;
+
     public OverlayWindow()
     {
         InitializeComponent();
+
+        // 记下 XAML 里的默认尺寸：它是"某个界面没设过宽/高"时的兜底。
+        // **必须在任何 ApplyWindowPlacement 之前取** —— 那之后 Width/Height 就是"窗口当前大小"了，
+        // 拿它当默认值，等于又把上一个界面的尺寸借给了下一个界面（那正是要修的 bug）。
+        _defaultSize = (Width, Height);
 
         var exeDir = AppContext.BaseDirectory;
         _config = PluginConfig.Load(Path.Combine(exeDir, "config.json"));
@@ -179,8 +195,11 @@ public partial class OverlayWindow : Window
         // 默认停在屏幕右侧（正是"游戏右边"）。
         // 这里**故意**用工作区（扣掉任务栏），跟拖动/吸附用的 ActiveArea() 不一样：
         // 第一次露面时窗口该是完整可见的，不该被任务栏压住一条。
-        Left = SystemParameters.WorkArea.Right - Width - 40;
-        Top = SystemParameters.WorkArea.Top + 120;
+        // 同一份默认摆放还有第二个用处："某个界面没设过位置"时用它兜底（见 ApplyWindowPlacement），
+        // 所以摆放在 DefaultWindowBounds() 里，别在这里写死第二遍。
+        var start = DefaultWindowBounds();
+        Left = start.Left;
+        Top = start.Top;
 
         // 影子窗口：和悬浮窗同位置同尺寸，专门负责接鼠标、把它变成"拖动窗口"。
         // 为什么要单独一个窗口：本窗口里嵌着 WebView2（HwndHost），它会阻断所在区域的
@@ -379,22 +398,25 @@ public partial class OverlayWindow : Window
         if (string.IsNullOrWhiteSpace(voice.Directory))
             return new { enabled = false, problem = "「语音.启用」是 true，但没配「目录」" };
 
+        string voiceRoot;
         try
         {
-            _voiceDir = Path.GetFullPath(voice.Directory);
+            voiceRoot = Path.GetFullPath(voice.Directory);
         }
         catch (Exception ex)
         {
             return new { enabled = false, problem = "语音目录路径不合法：" + ex.Message };
         }
 
-        if (!Directory.Exists(_voiceDir))
+        if (!Directory.Exists(voiceRoot))
         {
             _voiceDir = null;      // 目录不存在 → 不映射（映射不存在的目录会抛异常）
             return new { enabled = false, problem = "找不到语音目录：" + voice.Directory };
         }
 
-        var (emotions, problems) = VoiceLibrary.Resolve(voice);
+        _voiceDir = voiceRoot;
+
+        var (emotions, problems) = VoiceLibrary.Resolve(voice, voiceRoot);
         foreach (var p in problems) DebugLog.Write("语音：" + p);
 
         if (emotions.Count == 0)
@@ -684,26 +706,48 @@ public partial class OverlayWindow : Window
             });
         }
 
-        if (profile is not null) ApplyWindowPlacement(profile);
+        if (profile is not null) ApplyWindowPlacement(scene, profile);
 
         ApplyMode();      // 穿透/交互跟着模式与当前档位走（见 ShouldClickThrough）
     }
 
     /// <summary>
-    /// 把档位里的窗口位置与尺寸应用到窗口上。
-    /// **四个值都可能是"没设过"（null）**——那就保持窗口现在待的地方、现在的大小：
-    /// 用户没调过时，程序自己的默认摆放与 OverlayWindow.xaml 里的尺寸说了算，
-    /// 而且调整模式里拖过 / 缩过的窗口不该在切换界面时被改回去。
+    /// 把"这个界面该把窗口摆在哪"应用到窗口上。
+    ///
+    /// **这里曾经有个 bug（2026-09-19 修）**：原来档位里 X/Y/宽/高 为 null 时解释成
+    /// "保持窗口现在待的地方"，而屏幕上只有一个窗口 —— 它现在待的地方就是**上一个界面**的位置。
+    /// 结果只给主菜单设过位置时，选歌/打歌/结算全显示在主菜单的位置上；用户在选歌里随手拖一下，
+    /// 这个借来的位置就被记成选歌自己的位置，从此固化。
+    /// 现在"没设过"= 用**程序默认摆放**，三个界面的位置互不串味。
+    ///
+    /// 三个来源的优先级在 WindowPlacementResolver 里（纯逻辑、可在控制台测）。
     /// </summary>
-    private void ApplyWindowPlacement(SceneProfile profile)
+    private void ApplyWindowPlacement(GameScene scene, SceneProfile profile)
     {
-        var w = profile.Window;
+        var bounds = WindowPlacementResolver.Resolve(
+            profile.Window,
+            _pendingAdjustments.Get(scene),      // 这一轮刚拖出来的（还没落盘）
+            DefaultWindowBounds());
 
-        if (w.Width is { } width && width > 0 && Math.Abs(Width - width) > 0.5) Width = width;
-        if (w.Height is { } height && height > 0 && Math.Abs(Height - height) > 0.5) Height = height;
-        if (w.X is { } x && Math.Abs(Left - x) > 0.5) Left = x;
-        if (w.Y is { } y && Math.Abs(Top - y) > 0.5) Top = y;
+        if (Math.Abs(Width - bounds.Width) > 0.5) Width = bounds.Width;
+        if (Math.Abs(Height - bounds.Height) > 0.5) Height = bounds.Height;
+        if (Math.Abs(Left - bounds.Left) > 0.5) Left = bounds.Left;
+        if (Math.Abs(Top - bounds.Top) > 0.5) Top = bounds.Top;
     }
+
+    /// <summary>
+    /// 程序自己的默认摆放：屏幕右侧偏下一点。
+    /// 两个地方用它 —— 窗口第一次出现、以及某个界面还没设过位置。
+    ///
+    /// 用工作区（扣掉任务栏）而不是拖动/吸附用的整个屏幕（见 ActiveArea）：
+    /// 默认摆放必须保证窗口**完整可见**，不能被任务栏压住一条。
+    /// 用户自己拖到哪儿、吸到哪儿，那是他自己的选择，按整个屏幕算。
+    /// </summary>
+    private WindowBounds DefaultWindowBounds() => new(
+        SystemParameters.WorkArea.Right - _defaultSize.Width - DefaultRightMargin,
+        SystemParameters.WorkArea.Top + DefaultTopMargin,
+        _defaultSize.Width,
+        _defaultSize.Height);
 
     /// <summary>
     /// 页面就绪时把"当前界面该长什么样"补发一次。

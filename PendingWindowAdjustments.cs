@@ -38,6 +38,16 @@ public sealed class PendingWindowAdjustments
     /// <summary>有没有待保存的调整</summary>
     public bool Any => _changes.Count > 0;
 
+    /// <summary>
+    /// 某个界面这一轮拖出来的窗口状态（没拖过就是 null）。
+    ///
+    /// 它是"这个界面现在该摆在哪"的**第一层**来源（见 WindowPlacementResolver）：
+    /// 用户刚拖完、还没落盘，这一轮里窗口就得待在他拖的地方 —— 哪怕中途切去别的界面再切回来。
+    /// 少了这一层，切回来会跳回配置文件里的旧位置，用户会以为"我拖的那下没生效"。
+    /// </summary>
+    public WindowBounds? Get(GameScene scene)
+        => _changes.TryGetValue(scene, out var bounds) ? bounds : null;
+
     /// <summary>涉及哪些界面（顺序固定：主菜单 → 选歌 → 打歌 → 结算）</summary>
     public IReadOnlyList<GameScene> Scenes =>
         DisplayOrder.Where(_changes.ContainsKey).ToList();
