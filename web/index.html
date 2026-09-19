@@ -73,7 +73,9 @@
   let expressionDurationMs = 1500;
   let rendererName = "?";
 
-  const view = { zoom: 1, offsetY: 0, offsetX: 0 };
+  // 当前生效的"角色站位"。zoom / offsetX / offsetY 的语义来自全局视图参数（老配置的迁移来源），
+  // 界面感知接管之后由每个界面自己的"站位"覆盖；angle 是每界面独立的角度（单位：度）。
+  const view = { zoom: 1, offsetY: 0, offsetX: 0, angle: 0 };
 
   function post(obj) {
     if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(obj);
@@ -598,15 +600,25 @@
     const m = modelSize();
     const info = modelPatchInfo();
     const s = baseScale * view.zoom;
-    const left = Math.round(model.x), top = Math.round(model.y);
-    const right = Math.round(left + m.w * s);
-    const bottom = Math.round(top + m.h * s);
+
+    // 模型占了画面哪一块：**按旋转后的范围算**。
+    // 加了角度之后不能再拿 model.x / y 当左上角来算 —— 那两个现在是"脚底中心"的位置，
+    // 而且转过之后模型占的宽高也变了。这里按"绕脚底中心旋转"自己算包围盒，不依赖库。
+    const rad = (view.angle || 0) * Math.PI / 180;
+    const cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
+    const boxW = m.w * s * cosA + m.h * s * sinA;
+    const boxH = m.w * s * sinA + m.h * s * cosA;
+    const left = Math.round(model.x - boxW / 2);
+    const top = Math.round(model.y - boxH);
+    const right = Math.round(model.x + boxW / 2);
+    const bottom = Math.round(model.y);
     const visible = bottom > 0 && top < app.renderer.height && right > 0 && left < app.renderer.width;
 
     const text =
       "画布 " + app.renderer.width + "×" + app.renderer.height + "｜渲染器 " + rendererName +
       "｜模型(原始) " + Math.round(m.w) + "×" + Math.round(m.h) +
       "\n缩放 " + view.zoom.toFixed(2) + "（基准 " + baseScale.toFixed(4) + "）｜上下 " + view.offsetY.toFixed(2) +
+      "｜角度 " + (view.angle || 0).toFixed(0) + "°" +
       "｜模型范围 (" + left + "," + top + ")→(" + right + "," + bottom + ")｜在画面内 = " + visible +
       "\n补丁检查：动作组 [" + info.groups.join("、") + "]｜表情 " + info.defs.length + " 个" +
       (info.defs.length ? "：" + info.defs.slice(0, 4).join("、") + (info.defs.length > 4 ? "…" : "")
@@ -654,9 +666,17 @@
     const m = modelSize();
     const s = baseScale * view.zoom;
 
+    // 旋转轴心挪到**脚底中心**：角色像站在地上转身 —— 脚不动，上半身转。
+    // PIXI 默认绕模型的左上角转，那样一转角色就甩出画面了，所以这个 pivot 必须设。
+    // 注意它换掉的是"位置的含义"：设了 pivot 之后，model.x / y 定位的就是这个点
+    // （脚底中心），不再是左上角 —— 下面两行的算法因此也跟着换了一套。
+    model.pivot.set(m.w / 2, m.h);
+
     model.scale.set(s, s);
-    model.x = w / 2 - (m.w * s) / 2 + view.offsetX * w;
-    model.y = h - m.h * s + view.offsetY * h;
+    model.rotation = (view.angle || 0) * Math.PI / 180;   // 配置里是度，PIXI 要弧度
+
+    model.x = w / 2 + view.offsetX * w;                   // 脚底中心放在画布水平中线（+偏移）
+    model.y = h + view.offsetY * h;                       // 脚底贴画布底边（+偏移）
   }
 
   // ---------------- 渲染自检（排查用） ----------------
@@ -732,11 +752,8 @@
   /**
    * 应用一条 scene 消息：该显示就显示、并摆到这一档的站位；不该显示就藏起来。
    *
-   * 站位的语义和 view 完全一致（x / y 是相对画布宽高的比例，scale 是缩放倍数），
+   * 站位的语义和 view 完全一致（x / y 是相对画布宽高的比例，scale 是缩放倍数，angle 是角度），
    * 所以这里直接写进 view 再调 applyView() —— 位置算法只留一份，不重复实现。
-   *
-   * 每个界面那个"角度"字段暂时没用：绕轴心旋转要动模型的 pivot，
-   * 会连带影响位置计算和诊断条显示，留到"配置界面里拖角色"那一步一起做。
    */
   function applyScene(msg) {
     if (!model || !app) return;
@@ -748,6 +765,7 @@
       view.zoom = msg.character.scale;
       view.offsetX = msg.character.x;
       view.offsetY = msg.character.y;
+      view.angle = msg.character.angle || 0;    // 每界面独立的角度（度）
       applyView();
     }
 

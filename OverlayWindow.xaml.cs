@@ -9,6 +9,7 @@
 //
 // 另外负责"不干扰游戏"的那几件事：穿透、不抢焦点、调整模式、全局热键。
 // ============================================================
+using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -29,6 +30,7 @@ public partial class OverlayWindow : Window
     // ---- 窗口消息 ----
     private const int WM_HOTKEY = 0x0312;
     private const int WM_NCHITTEST = 0x0084;
+    private const int WM_EXITSIZEMOVE = 0x0232;     // 系统原生拖动/缩放结束（= 用户松开鼠标）
     private const int HTCAPTION = 2;
     private const int HTBOTTOMRIGHT = 17;
 
@@ -174,7 +176,9 @@ public partial class OverlayWindow : Window
 
         _hwnd = new WindowInteropHelper(this).Handle;
 
-        // 默认停在屏幕右侧（正是"游戏右边"）
+        // 默认停在屏幕右侧（正是"游戏右边"）。
+        // 这里**故意**用工作区（扣掉任务栏），跟拖动/吸附用的 ActiveArea() 不一样：
+        // 第一次露面时窗口该是完整可见的，不该被任务栏压住一条。
         Left = SystemParameters.WorkArea.Right - Width - 40;
         Top = SystemParameters.WorkArea.Top + 120;
 
@@ -183,6 +187,13 @@ public partial class OverlayWindow : Window
         // WPF 命中测试 —— 在本窗口里放什么透明元素都接不到鼠标。
         _interaction = new InteractionWindow();
         _interaction.Dragged += OnInteractionDragged;
+        _interaction.DragFinished += () =>
+        {
+            SnapToEdge();          // 先判定要不要吸到边上
+            RecordWindowChange();  // 再把最终位置记进"待保存"（吸完的位置才是用户看到的位置）
+        };
+        // 窗口挪了位置就让影子窗口跟上（影子窗口必须和悬浮窗严丝合缝地重叠）。
+        // 注意这里**不做吸附** —— 吸附只发生在"松手那一刻"，见 SnapToEdge。
         LocationChanged += (_, _) => SyncInteractionWindow();
         SizeChanged += (_, _) => SyncInteractionWindow();
         Closed += (_, _) =>
@@ -794,17 +805,89 @@ public partial class OverlayWindow : Window
     /// <summary>
     /// 影子窗口报告"鼠标拖了多远" → 把真正的悬浮窗挪过去，并让影子窗口跟上。
     ///
+    /// **拖动过程中不做任何吸附**：窗口要自由跟手，吸不吸等松手时再判（见 SnapToEdge）。
+    ///
     /// 只有"不穿透"的界面（选歌 / 结算）才会走到这里：打歌时影子窗口是隐藏的，
     /// 鼠标本来就该留给 osu（想拖就按 Ctrl+Alt+T 进调整模式）。
     ///
     /// 拖动结果目前只在内存里：真正写回配置要配合"停服务时询问是否保存"那套
     /// 待保存调整机制（定稿 §3.6.2），属于下一步。
     /// </summary>
+    /// <summary>
+    /// 悬浮窗的"活动区域"：**整个屏幕**，而不是工作区（工作区会扣掉任务栏）。
+    ///
+    /// 为什么不用工作区（用户 2026-09-19 指出，很关键）：
+    ///   玩 osu 时游戏是**全屏**的，**任务栏那块地方显示的就是游戏画面** ——
+    ///   这时窗口如果只贴到工作区底边，离屏幕底边还差一条任务栏的高度，
+    ///   玩家看到的就是"没吸到底"，会当成 bug。
+    ///   悬浮窗本来就是给玩游戏时用的，所以按屏幕边缘算才符合实际观感。
+    ///
+    /// 代价：回到桌面（任务栏露出来）时，窗口拖到最底下会被任务栏压住一条 ——
+    ///   但那是"用户确实拖到了屏幕最底"的结果，比"游戏里吸不到底"划算得多。
+    ///
+    /// 用 VirtualScreen* 而不是 PrimaryScreen*：前者是**所有显示器的并集**
+    /// （多屏时窗口跨屏拖动也不用改这段；单屏时它就等于屏幕尺寸）。
+    /// </summary>
+    private static Rect ActiveArea() => new(
+        SystemParameters.VirtualScreenLeft,
+        SystemParameters.VirtualScreenTop,
+        SystemParameters.VirtualScreenWidth,
+        SystemParameters.VirtualScreenHeight);
+
     private void OnInteractionDragged(double dx, double dy)
     {
-        Left += dx;
-        Top += dy;
+        // **拖动过程中把窗口留在屏幕里**（不是吸附，是别让它飘出屏幕找不回来）。
+        // 不在边界附近时这段完全不起作用，窗口就是老老实实跟手。
+        //
+        // 顺带解决了"下边吸不住"：窗口底部不会再越过屏幕下边缘，
+        // 于是松手时"离下边多远"是个正常的小数字，贴齐判定才成立
+        // （原来鼠标按在窗口偏上位置时，拖到底就已经把窗口**拖出屏幕**了）。
+        var area = ActiveArea();
+        Left = Math.Clamp(Left + dx, area.Left, Math.Max(area.Left, area.Right - Width));
+        Top = Math.Clamp(Top + dy, area.Top, Math.Max(area.Top, area.Bottom - Height));
+
         SyncInteractionWindow();
+    }
+
+    /// <summary>
+    /// 松手时判定要不要"吸"到屏幕边缘 —— 只有这一次机会判定，拖动过程中不吸。
+    ///
+    /// 为什么必须是松手时（用户 2026-09-19 反馈）：
+    ///   拖动中实时吸的话，窗口会在靠近边缘时被"粘"在边上、和鼠标脱节，
+    ///   用户想停在边缘附近却停不住 —— 那是很别扭的手感。放到松手这一刻判定，
+    ///   拖动过程就完全是"窗口乖乖跟着手"，落点才做一次纠正。
+    ///
+    /// 两个来源分开放（定稿 §3.6.5）：
+    ///   · **吸不吸** —— 每界面一份（档位里的"自动吸附"），因为可能打歌界面想让它老实待在角落
+    ///   · **吸多远** —— 全局手感设置，这里先用 16 DIP（用户要求"稍微小一点，太大像被粘住"）
+    ///
+    /// 调用点有两个（对应两条拖动路径）：
+    ///   · 运行期拖影子窗口 → InteractionWindow 的 DragFinished 事件
+    ///   · 调整模式由系统原生拖动 → WM_EXITSIZEMOVE 消息
+    ///
+    /// 现在只按**主屏幕工作区**算（不含任务栏）。多显示器时应该取"窗口所在那块屏幕"的工作区 ——
+    /// 用户目前是单屏，等真有多屏需求再改（不提前写没人用的分支）。
+    /// </summary>
+    private void SnapToEdge()
+    {
+        const double SnapDistance = 16;                  // DIP，全局手感值
+        var area = ActiveArea();
+        var maxLeft = Math.Max(area.Left, area.Right - Width);
+        var maxTop = Math.Max(area.Top, area.Bottom - Height);
+
+        // 先在"吸附之前"把窗口收回屏幕内。
+        // 这条对**调整模式的系统原生拖动**尤其重要：那条路径不受上面那个 Clamp 管，
+        // 用户可以把它拖出屏幕，松手时得先捞回来。
+        Left = Math.Clamp(Left, area.Left, maxLeft);
+        Top = Math.Clamp(Top, area.Top, maxTop);
+
+        if (_scenes.Get(_sceneTracker.Current)?.Window.SnapToEdges != true) return;
+
+        if (Math.Abs(Left - area.Left) < SnapDistance) Left = area.Left;
+        else if (Math.Abs(maxLeft - Left) < SnapDistance) Left = maxLeft;
+
+        if (Math.Abs(Top - area.Top) < SnapDistance) Top = area.Top;
+        else if (Math.Abs(maxTop - Top) < SnapDistance) Top = maxTop;
     }
 
     // ---------------- 状态提示（会被 WebView2 遮住，所以只在调整模式/出错时看得到） ----------------
@@ -1090,6 +1173,14 @@ public partial class OverlayWindow : Window
                 }
                 break;
 
+            case WM_EXITSIZEMOVE:
+                // 系统原生拖动 / 缩放结束了（= 用户松开鼠标）→ 这才是判定"要不要吸到边上"的时刻。
+                // 调整模式走的是系统原生拖动（WM_NCHITTEST 返回 HTCAPTION），
+                // 所以这条消息是那条路径上唯一的"松手"信号。
+                SnapToEdge();
+                RecordWindowChange();      // 吸完之后的最终位置才是要保存的
+                break;
+
             case WM_NCHITTEST:
                 if (_isRunningMode) break;      // 运行模式下窗口是穿透的，系统不会问到这里
 
@@ -1104,6 +1195,78 @@ public partial class OverlayWindow : Window
         }
 
         return IntPtr.Zero;
+    }
+
+    // ---------------- 运行期调整落盘（窗口位置/尺寸） ----------------
+
+    /// <summary>
+    /// 运行期拖出来的窗口状态，先攒在内存里**不立刻写盘**（定稿 §3.6.2）：
+    /// 用户常常只是"临时挪开一下"，自动保存会把配置弄脏；而且拖动是连续动作，
+    /// 每帧写盘既抖磁盘、又可能写坏文件。所以只在**退出程序时问一次**。
+    ///
+    /// "攒"和"写"这两件事都在两个纯逻辑类里（它们不依赖 WPF，所以能在控制台测）：
+    ///   PendingWindowAdjustments —— 攒着待保存的调整
+    ///   ConfigFileWriter        —— 把调整写回 config.json
+    /// </summary>
+    private readonly PendingWindowAdjustments _pendingAdjustments = new();
+
+    /// <summary>把"当前界面的窗口状态"记进待保存清单（拖动结束、松手之后调）</summary>
+    private void RecordWindowChange()
+    {
+        _pendingAdjustments.Record(_sceneTracker.Current, Left, Top, Width, Height);
+        DebugLog.Write($"待保存：{_sceneTracker.Current} 的窗口状态 = ({Left:0},{Top:0}) {Width:0}x{Height:0}");
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (_pendingAdjustments.Any && !AskSaveWindowChanges())
+        {
+            e.Cancel = true;      // 用户点了"取消"：别退
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
+    /// <summary>
+    /// 退出前问一次要不要保存窗口位置。
+    /// 返回 false 表示用户选了"取消"（调用方应当中止关闭）。
+    ///
+    /// 提示里**带上界面名**（定稿 §3.6.2 的要求）—— 否则用户不知道改的是哪一个界面的窗口。
+    /// </summary>
+    private bool AskSaveWindowChanges()
+    {
+        // 界面名的顺序由 PendingWindowAdjustments 固定（不跟着记录先后变）
+        var names = string.Join("、", _pendingAdjustments.Scenes
+            .Select(SceneProfiles.KeyOf)
+            .Where(k => k is not null));
+
+        // 带 owner 调用：本窗口是 Topmost，弹窗跟着它才会显示在全屏游戏之上，
+        // 否则用户按退出热键后会「什么都没发生」（弹窗其实在游戏后面等着他）。
+        var answer = MessageBox.Show(this,
+            $"{names}界面的悬浮窗位置已调整，是否保存？\n\n" +
+            "保存后下次启动仍然停在这个位置。",
+            "osu-live2d-overlay",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question);
+
+        if (answer == MessageBoxResult.Cancel) return false;
+        if (answer == MessageBoxResult.No) return true;
+
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "config.json");
+            var written = ConfigFileWriter.WriteWindowBounds(path, _pendingAdjustments.TakeAll());
+            DebugLog.Write($"窗口状态已保存到 config.json（{written} 个界面）");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("保存窗口状态失败：" + ex.Message);
+            MessageBox.Show(this, "保存失败：" + ex.Message + "\n\n配置没有被改动。",
+                            "osu-live2d-overlay", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        return true;
     }
 
     protected override void OnClosed(EventArgs e)

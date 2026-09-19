@@ -32,6 +32,13 @@ public partial class InteractionWindow : Window
     /// <summary>鼠标拖了多远（dx, dy）—— 外面拿它去移动真正的悬浮窗</summary>
     public event Action<double, double>? Dragged;
 
+    /// <summary>
+    /// 拖动结束（鼠标松开）。
+    /// 外面用它来判定"要不要吸到屏幕边上" —— **吸附必须放在松手这一刻**：
+    /// 拖动过程中实时吸会让窗口"粘"在半路、和鼠标脱节，手感很怪。
+    /// </summary>
+    public event Action? DragFinished;
+
     private Point _lastScreen;      // 上一次的**屏幕**坐标
     private bool _dragging;
 
@@ -79,8 +86,10 @@ public partial class InteractionWindow : Window
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
     {
+        var wasDragging = _dragging;
         _dragging = false;
         ReleaseMouseCapture();
-        DebugLog.Write("影子窗口：鼠标松开");
+
+        if (wasDragging) DragFinished?.Invoke();
     }
 }

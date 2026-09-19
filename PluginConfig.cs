@@ -46,12 +46,21 @@ public sealed class PluginConfig
     /// </summary>
     [JsonPropertyName("调试模式")] public bool DebugMode { get; set; }
 
-    private static readonly JsonSerializerOptions Options = new()
+    /// <summary>
+    /// 读写配置统一的序列化选项。
+    /// 运行期改配置（比如把拖动后的窗口位置写回去）也要用它，所以是 internal 而不是 private。
+    /// </summary>
+    internal static readonly JsonSerializerOptions Options = new()
     {
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,   // 允许配置文件里写注释
         AllowTrailingCommas = true,                        // 允许末尾多余逗号
-        WriteIndented = true
+        WriteIndented = true,
+
+        // **必须关掉"非 ASCII 转义"**：默认行为会把中文键名写成 \u754C\u9762\u611F\u77E5 这种，
+        // 配置文件就彻底没法看了 —— 而它本来就是要给人读、给人改的。
+        // （读取从来不受影响，只有写出来的时候才会露馅，所以这个坑藏得比较深。）
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     /// <summary>从程序目录读取 config.json；读不到就用默认值（并生成一份模板）</summary>

@@ -223,6 +223,24 @@ public sealed class SceneProfiles
     };
 
     /// <summary>
+    /// 场景 → 它在 config.json 里的键名。
+    ///
+    /// 为什么需要它：运行期拖动之后要把窗口位置写回配置文件，而写回是"读原文 → 只改那几个键"，
+    /// 得知道该往哪个键底下写。这份"场景对哪个中文键"的知识放在这里，
+    /// 和上面几个 JsonPropertyName 挨着 —— 改了键名就一眼能看见这两处要一起动。
+    ///
+    /// Unknown / 认不出的值 → null（没有对应的配置位置）。
+    /// </summary>
+    public static string? KeyOf(GameScene scene) => scene switch
+    {
+        GameScene.MainMenu => "主菜单",
+        GameScene.SongSelect => "选歌",
+        GameScene.Playing => "打歌",
+        GameScene.Result => "结算",
+        _ => null
+    };
+
+    /// <summary>
     /// 设置界面里那个按钮：把 source 这一份，填给**还没配置**的界面。
     ///
     /// · 已经配好的界面一律不碰 —— 那是用户自己调出来的，一键覆盖会让人白干
