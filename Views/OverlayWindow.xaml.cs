@@ -11,7 +11,6 @@
 // ============================================================
 using System.ComponentModel;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
@@ -22,56 +21,19 @@ namespace OsuLive2dOverlay;
 
 public partial class OverlayWindow : Window
 {
-    // ---- 窗口扩展样式 ----
-    private const int GWL_EXSTYLE = -20;
-    private const int WS_EX_TRANSPARENT = 0x00000020;
-    private const int WS_EX_NOACTIVATE = 0x08000000;
-
-    // ---- 窗口消息 ----
-    private const int WM_HOTKEY = 0x0312;
-    private const int WM_NCHITTEST = 0x0084;
-    private const int WM_EXITSIZEMOVE = 0x0232;     // 系统原生拖动/缩放结束（= 用户松开鼠标）
-    private const int HTCAPTION = 2;
-    private const int HTBOTTOMRIGHT = 17;
-
-    private const uint MOD_ALT = 0x0001;
-    private const uint MOD_CONTROL = 0x0002;
-    private const uint VK_T = 0x54;
-    private const uint VK_Q = 0x51;
-    private const uint VK_R = 0x52;
-    private const uint VK_V = 0x56;
-    private const uint VK_1 = 0x31;
-    private const uint VK_2 = 0x32;
-    private const uint VK_3 = 0x33;
-    private const uint VK_4 = 0x34;
+    // 热键编号：这是**应用自己的概念**（不是 Win32 的），所以留在窗口类里。
+    // 修饰键、虚拟键码、窗口消息、扩展样式位、P/Invoke 全在 Infrastructure/Win32.cs。
     private const int HOTKEY_TOGGLE_MODE = 9001;
     private const int HOTKEY_QUIT = 9002;
     private const int HOTKEY_RELOAD = 9003;
     private const int HOTKEY_TEST_1 = 9004;
     private const int HOTKEY_TEST_2 = 9005;
     private const int HOTKEY_TEST_3 = 9006;
-    private const int HOTKEY_TEST_RANGE = 9008;
     private const int HOTKEY_TEST_VOICE = 9007;
+    private const int HOTKEY_TEST_RANGE = 9008;
+
+    /// <summary>窗口右下角用来缩放的"抓取区"边长（应用自己的约定，不是系统的）</summary>
     private const double ResizeGripSize = 18;
-
-    [DllImport("user32.dll")]
-    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-    [DllImport("user32.dll")]
-    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-    [DllImport("user32.dll")]
-    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-    [DllImport("user32.dll")]
-    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    [DllImport("user32.dll")]
-    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    // ---- 目光跟随：读全局光标位置（窗口点击穿透时 WebView2 收不到鼠标事件）----
-    [DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X; public int Y; }
 
     private readonly PluginConfig _config;
     private readonly TosuClient _client = new();
@@ -221,16 +183,19 @@ public partial class OverlayWindow : Window
         };
 
         ApplyMode();
-        RegisterHotKey(_hwnd, HOTKEY_TOGGLE_MODE, MOD_CONTROL | MOD_ALT, VK_T);
-        RegisterHotKey(_hwnd, HOTKEY_QUIT, MOD_CONTROL | MOD_ALT, VK_Q);
-        RegisterHotKey(_hwnd, HOTKEY_RELOAD, MOD_CONTROL | MOD_ALT, VK_R);
+
+        // 热键都挂在同一个修饰键组合下（Ctrl+Alt + 字母/数字）
+        void Hotkey(int id, uint key) => Win32.RegisterHotkey(_hwnd, id, Win32.MOD_CONTROL | Win32.MOD_ALT, key);
+
+        Hotkey(HOTKEY_TOGGLE_MODE, Win32.VK_T);
+        Hotkey(HOTKEY_QUIT, Win32.VK_Q);
+        Hotkey(HOTKEY_RELOAD, Win32.VK_R);
         // 测试热键：不开游戏也能验证"消息 → 表情/语音"这一段通不通
-        RegisterHotKey(_hwnd, HOTKEY_TEST_1, MOD_CONTROL | MOD_ALT, VK_1);
-        RegisterHotKey(_hwnd, HOTKEY_TEST_2, MOD_CONTROL | MOD_ALT, VK_2);
-        RegisterHotKey(_hwnd, HOTKEY_TEST_3, MOD_CONTROL | MOD_ALT, VK_3);
-        RegisterHotKey(_hwnd, HOTKEY_TEST_RANGE, MOD_CONTROL | MOD_ALT, VK_4);
-        RegisterHotKey(_hwnd, HOTKEY_TEST_VOICE, MOD_CONTROL | MOD_ALT, VK_V);
-        RegisterHotKey(_hwnd, HOTKEY_TEST_RANGE, MOD_CONTROL | MOD_ALT, VK_4);
+        Hotkey(HOTKEY_TEST_1, Win32.VK_1);
+        Hotkey(HOTKEY_TEST_2, Win32.VK_2);
+        Hotkey(HOTKEY_TEST_3, Win32.VK_3);
+        Hotkey(HOTKEY_TEST_RANGE, Win32.VK_4);
+        Hotkey(HOTKEY_TEST_VOICE, Win32.VK_V);
 
         if (HwndSource.FromHwnd(_hwnd) is { } source)
             source.AddHook(WndProc);
@@ -1119,18 +1084,9 @@ public partial class OverlayWindow : Window
     /// </summary>
     private void ApplyExStyleToWindowTree(IntPtr root, bool clickThrough)
     {
-        void Apply(IntPtr h, bool transparent)
-        {
-            if (h == IntPtr.Zero) return;
-            int ex = GetWindowLong(h, GWL_EXSTYLE);
-            ex |= WS_EX_NOACTIVATE;
-            if (transparent) ex |= WS_EX_TRANSPARENT;
-            else ex &= ~WS_EX_TRANSPARENT;
-            SetWindowLong(h, GWL_EXSTYLE, ex);
-        }
-
-        Apply(root, clickThrough);                                                          // 顶层：按界面切换
-        EnumChildWindows(root, (h, _) => { Apply(h, true); return true; }, IntPtr.Zero);     // 子窗口：永远穿透，别清除
+        // 顶层：按界面切换穿透；子窗口：**永远保持穿透，别清除**（原因见上面的注释）。
+        // 遍历与样式位操作都在 Win32 里，"子窗口必须保持穿透"这条知识留在这里。
+        Win32.ForEachInWindowTree(root, h => Win32.SetClickThrough(h, h == root ? clickThrough : true));
     }
 
     // ---------------- 目光跟随鼠标 ----------------
@@ -1149,7 +1105,7 @@ public partial class OverlayWindow : Window
         };
         _cursorTimer.Tick += (_, _) =>
         {
-            if (!_pageReady || !GetCursorPos(out var p)) return;
+            if (!_pageReady || !Win32.TryGetCursorPos(out var p)) return;
 
             // 屏幕设备像素 → WPF 坐标（自动处理 DPI）→ 窗口内坐标
             var local = PointFromScreen(new Point(p.X, p.Y));
@@ -1170,7 +1126,7 @@ public partial class OverlayWindow : Window
     {
         switch (msg)
         {
-            case WM_HOTKEY:
+            case Win32.WM_HOTKEY:
                 switch (wParam.ToInt32())
                 {
                     case HOTKEY_TOGGLE_MODE:
@@ -1208,7 +1164,9 @@ public partial class OverlayWindow : Window
                         break;
 
                     case HOTKEY_TEST_RANGE:
-
+                        SendTestRange();
+                        handled = true;
+                        break;
 
                     case HOTKEY_QUIT:
                         Close();
@@ -1217,7 +1175,7 @@ public partial class OverlayWindow : Window
                 }
                 break;
 
-            case WM_EXITSIZEMOVE:
+            case Win32.WM_EXITSIZEMOVE:
                 // 系统原生拖动 / 缩放结束了（= 用户松开鼠标）→ 这才是判定"要不要吸到边上"的时刻。
                 // 调整模式走的是系统原生拖动（WM_NCHITTEST 返回 HTCAPTION），
                 // 所以这条消息是那条路径上唯一的"松手"信号。
@@ -1225,7 +1183,7 @@ public partial class OverlayWindow : Window
                 RecordWindowChange();      // 吸完之后的最终位置才是要保存的
                 break;
 
-            case WM_NCHITTEST:
+            case Win32.WM_NCHITTEST:
                 if (_isRunningMode) break;      // 运行模式下窗口是穿透的，系统不会问到这里
 
                 int screenX = (short)(lParam.ToInt32() & 0xFFFF);
@@ -1235,7 +1193,7 @@ public partial class OverlayWindow : Window
                              && local.Y >= ActualHeight - ResizeGripSize;
 
                 handled = true;
-                return new IntPtr(inCorner ? HTBOTTOMRIGHT : HTCAPTION);
+                return new IntPtr(inCorner ? Win32.HTBOTTOMRIGHT : Win32.HTCAPTION);
         }
 
         return IntPtr.Zero;
@@ -1320,14 +1278,14 @@ public partial class OverlayWindow : Window
 
         if (_hwnd != IntPtr.Zero)
         {
-            UnregisterHotKey(_hwnd, HOTKEY_TOGGLE_MODE);
-            UnregisterHotKey(_hwnd, HOTKEY_QUIT);
-            UnregisterHotKey(_hwnd, HOTKEY_RELOAD);
-            UnregisterHotKey(_hwnd, HOTKEY_TEST_1);
-            UnregisterHotKey(_hwnd, HOTKEY_TEST_2);
-            UnregisterHotKey(_hwnd, HOTKEY_TEST_3);
-            UnregisterHotKey(_hwnd, HOTKEY_TEST_RANGE);
-            UnregisterHotKey(_hwnd, HOTKEY_TEST_VOICE);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_TOGGLE_MODE);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_QUIT);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_RELOAD);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_1);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_2);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_3);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_RANGE);
+            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_VOICE);
         }
 
         base.OnClosed(e);
