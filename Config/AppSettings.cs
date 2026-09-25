@@ -28,7 +28,7 @@ namespace OsuLive2dOverlay;
 
 public sealed class AppSettings
 {
-    /// <summary>通用：外观、语言、字体、字号、开机自启、托盘、关闭行为</summary>
+    /// <summary>通用：外观、字体、字号、开机自启、托盘、关闭行为</summary>
     [JsonPropertyName("通用")] public GeneralConfig General { get; set; } = new();
 
     /// <summary>悬浮窗的**全局**行为（每界面一份的窗口状态在"界面感知"里，随档案走）</summary>
@@ -175,7 +175,6 @@ public sealed class AppSettings
 
         // 字段级兜底：空字符串在界面上就是"没填"，不该让它变成 null 传下去
         General.Appearance = Blank(General.Appearance, "跟随系统");
-        General.Language = Blank(General.Language, "跟随系统");
         General.Font = Blank(General.Font, "跟随系统");
         DataSource.Ip = Blank(DataSource.Ip, DataSourceConfig.DefaultIp);
         HealthCheck.ModeText = Blank(HealthCheck.ModeText, "宽松");
@@ -366,9 +365,6 @@ public sealed class GeneralConfig
 {
     /// <summary>外观：<c>跟随系统</c> / <c>浅色</c> / <c>深色</c></summary>
     [JsonPropertyName("外观")] public string Appearance { get; set; } = "跟随系统";
-
-    /// <summary>语言：<c>跟随系统</c> / <c>中文</c> / <c>English</c>。**只切界面文案，不改配置键名**（决策 4）</summary>
-    [JsonPropertyName("语言")] public string Language { get; set; } = "跟随系统";
 
     /// <summary>字体：<c>跟随系统</c> 或具体字体名（如 <c>微软雅黑</c>）</summary>
     [JsonPropertyName("字体")] public string Font { get; set; } = "跟随系统";

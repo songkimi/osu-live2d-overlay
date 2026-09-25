@@ -37,7 +37,7 @@ public static class AutoStartRegistration
     /// <summary>Run 键的路径。**只在这里写一份**（验证工程与界面都引它）</summary>
     public const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
-    /// <summary>登记的那个值的名字。用英文的固定名（不是界面文案），这样换语言也不会失效</summary>
+    /// <summary>登记的那个值的名字。用英文的固定名（不是界面文案），这样界面文案怎么改都不会失效</summary>
     public const string ValueName = "osu-live2d-overlay";
 
     /// <summary>

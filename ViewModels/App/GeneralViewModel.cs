@@ -32,12 +32,11 @@ public partial class GeneralViewModel : ObservableObject
     private bool _loading;
 
     // ------------------------------------------------------------
-    // 八个配置字段。
+    // 七个配置字段。
     // **名字与 GeneralConfig 的属性名一一对应**（配置类那边再用 [JsonPropertyName] 映射中文键名）。
     // ------------------------------------------------------------
 
     [ObservableProperty] private string _appearance = "跟随系统";
-    [ObservableProperty] private string _language = "跟随系统";
     [ObservableProperty] private string _font = "跟随系统";
     [ObservableProperty] private double _fontSizePoints = 10.5;
     [ObservableProperty] private bool _autoStart;
@@ -66,8 +65,6 @@ public partial class GeneralViewModel : ObservableObject
 
 
     public IReadOnlyList<string> AppearanceOptions { get; } = new[] { "跟随系统", "浅色", "深色" };
-
-    public IReadOnlyList<string> LanguageOptions { get; } = new[] { "跟随系统", "中文", "English" };
 
     /// <summary>
     /// 字体选项 = 「跟随系统」+ 本机所有字体族。
@@ -116,7 +113,6 @@ public partial class GeneralViewModel : ObservableObject
         nameof(MinFontSizePoints),
         nameof(MaxFontSizePoints),
         nameof(AppearanceOptions),
-        nameof(LanguageOptions),
         nameof(FontOptions),
         nameof(IsTrayIconOff),
     ];
@@ -261,7 +257,6 @@ public partial class GeneralViewModel : ObservableObject
         var general = _store.Settings.General;
 
         general.Appearance = Appearance;
-        general.Language = Language;
         general.Font = Font;
         general.FontSizePoints = FontSizePoints;
         general.AutoStart = AutoStart;
@@ -301,7 +296,6 @@ public partial class GeneralViewModel : ObservableObject
         var defaults = new GeneralConfig();
 
         Appearance = defaults.Appearance;
-        Language = defaults.Language;
         Font = defaults.Font;
         FontSizePoints = defaults.FontSizePoints;
         AutoStart = defaults.AutoStart;
@@ -347,7 +341,6 @@ public partial class GeneralViewModel : ObservableObject
         {
             var general = _store.Settings.General;
             Appearance = general.Appearance;
-            Language = general.Language;
             Font = general.Font;
             FontSizePoints = general.FontSizePoints;
             AutoStart = general.AutoStart;
