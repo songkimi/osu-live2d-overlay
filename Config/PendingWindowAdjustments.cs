@@ -27,8 +27,6 @@ public sealed class PendingWindowAdjustments
 {
     /// <summary>
     /// 提示文案里的界面顺序固定成"主菜单 → 选歌 → 打歌 → 结算"。
-    /// 不能拿字典的遍历顺序去拼文案 —— 那玩意儿不保证是插入顺序，
-    /// 同一件事的提示语会一会儿一个样。
     /// </summary>
     private static readonly GameScene[] DisplayOrder =
         { GameScene.MainMenu, GameScene.SongSelect, GameScene.Playing, GameScene.Result };

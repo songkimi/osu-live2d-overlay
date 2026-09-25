@@ -11,6 +11,7 @@
 // ============================================================
 using System.ComponentModel;
 using System.IO;
+using System.Security.Cryptography.Xml;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
@@ -65,9 +66,7 @@ public partial class OverlayWindow : Window
     private readonly AppSettings _settings;
 
     /// <summary>
-    /// 数据源客户端。**地址从设置里来**（★ 2026-09-23），所以在构造函数里才创建 ——
-    /// 原来这里是字段初始化器里的 `new()`，而地址写死在 TosuClient 内部，
-    /// 于是设置界面上的「监听地址 / 监听端口」两个框改了没有任何效果（**而且不报错**）。
+    /// 数据源客户端。地址从设置里来
     /// </summary>
     private readonly TosuClient _client;
     private readonly ComboTracker _tracker;
@@ -91,7 +90,7 @@ public partial class OverlayWindow : Window
     /// <summary>
     /// 界面状态机：把 tosu 报的 menu.state 翻译成"现在在哪个界面"。
     /// 它只负责**知道**，不负责**表现** —— 每个界面显示什么、在哪、能不能拖，
-    /// 都是配置的事（属于将来的 UI 层），这个类一概不管。
+    /// 都是配置的事，这个类一概不管。
     /// </summary>
     private readonly GameStateTracker _sceneTracker = new();
 
@@ -125,7 +124,7 @@ public partial class OverlayWindow : Window
     private bool _clickThroughApplied = true;
 
     /// <summary>
-    /// 收到过第一包**能用**的 tosu 数据没有（★ 2026-09-23）。
+    /// 收到过第一包**能用**的 tosu 数据没有
     ///
     /// 它只为一件事存在：「启动悬浮窗时自动启动 tosu/osu」之后，
     /// 按「启动等待秒数」等一段时间还没数据就**说一声** ——
@@ -385,14 +384,13 @@ public partial class OverlayWindow : Window
 
             // 语音目录：解析成"情绪 → 地址"的表，随 init 一起发给页面。
             // 已经**在构造时**算好了 —— 那句"N 类情绪"的日志也在那边写
-            // （★ 2026-09-23：原来这里靠一个只为测试热键服务的字段数情绪，现在那个字段删了）
 
             // 先把模型扫一遍 —— 配置里引用的是"标识"，补丁要靠这份扫描结果把标识翻回文件路径
             var scan = ModelScanner.Scan(_config.Model.Directory, _config.Model.Entry);
             foreach (var problem in scan.Problems) DebugLog.Write("扫描：" + problem);
 
             // 表情清单：把每个 exp3 文件里"要改哪些参数"读进来（页面合成时要用），
-            // 顺带拿 cdi3 里的名字给它起个人话名字（"3.exp3" → "星星眼"）
+            // 顺带拿 cdi3 里的名字反射的注册名（"3.exp3" → "星星眼"）
             _catalog = ExpressionCatalog.Build(scan, _config.Model.Directory);
             foreach (var problem in _catalog.Problems) DebugLog.Write("表情：" + problem);
             if (scan.Expressions.Count > 0)
@@ -606,9 +604,7 @@ public partial class OverlayWindow : Window
     /// </summary>
     private void OnSnapshotReceived(TosuSnapshot snapshot)
     {
-        // "进了游戏没有"看**血条**（加载期间它是 0，歌曲一开始就是满的），
-        // 不看 gameMode —— gameMode 是"哪个游玩模式"，拿它当布尔值用是当初误读了一局 mania
-        // （mania 恰好 =3）。详见 GameStateTracker 文件头。
+        // "进了游戏没有"看**血条**（加载期间它是 0，歌曲一开始就是满的）
         var scene = _sceneTracker.Update(snapshot.MenuState, snapshot.Hp);
         var loading = _sceneTracker.IsLoading;
         var mode = GameModes.FromTosu(snapshot.GameMode);
@@ -667,15 +663,7 @@ public partial class OverlayWindow : Window
     /// <summary>血条是浮点（`200` 和 `200.0` 都可能出现），日志里按原样打</summary>
     private static string Text(double? value) => value?.ToString("0.###") ?? "缺失";
 
-    // ★ 2026-09-21：「画面快照」整个撤掉了（这里原来有个 `SaveSnapshot`）。
-    //   它当初是排查"角色看不见"的利器 —— 页面把画布导成 PNG 发回来存盘，
-    //   一张图就能分清"根本没画出来"和"画了但没上屏"。那个问题已经查清并修掉了
-    //   （见 §1022 那一段的结论），留着反而是负担：
-    //     · 一次编码约 270KB，要写日志/磁盘
-    //     · 极易把帧率拖垮（实测：设置界面拖一下滑块就做一次全画布像素扫描 + PNG 编码，
-    //       帧率掉到 5 帧、日志被 base64 撑到 34MB）
-    //   判断"画出来没有"现在靠页面 `renderSelfCheck()` 里**数非透明像素**那一行 ——
-    //   同一件事、不写文件、只回一行字。
+   
 
     /// <summary>
     /// 把"当前界面该长什么样"落到页面和窗口上。
@@ -706,7 +694,7 @@ public partial class OverlayWindow : Window
         // 现在只有"看得见 / 看不见"，将来要做"透明度跟着血条走"时只改那个类。
         var opacity = CharacterOpacity.Resolve(usable, _sceneTracker.IsLoading);
 
-        // 站位要**按当前游玩模式**挑（决策 50）：mania 是竖条列、std 是打击区，
+        // 站位要**按当前游玩模式**挑（决策 50）：mania 是下落式、std 是拟太鼓，
         // 角色该站哪、多大跟着不一样。没单独设过的模式自动用场景自己那份。
         var placement = profile?.PlacementFor(_currentMode);
 
@@ -1291,7 +1279,22 @@ public partial class OverlayWindow : Window
     /// <summary>把"当前界面的窗口状态"记进待保存清单（拖动结束、松手之后调）</summary>
     private void RecordWindowChange()
     {
+        //2026.9.25bug:解决了只是触摸悬浮窗就会标脏的问题
         var scene = _sceneTracker.Current;
+        var saved = _scenes.Get(scene)?.Window;
+        if (saved is not null
+            && saved.X is { } sx
+            && saved.Y is { } sy
+            && saved.Width is { } sw
+            && saved.Height is { } sh
+            && Math.Abs(sx - Left) < 0.5
+            && Math.Abs(sy - Top) < 0.5
+            && Math.Abs(sw - Width) < 0.5
+            && Math.Abs(sh - Height) < 0.5)
+        {
+            DebugLog.Write($"窗口位置与配置一致 → 不记（{scene}）");
+            return;
+        }
 
         // 「位置调整后自动保存」（默认关，决策 6：默认询问而不是默认保存）。
         // ★ 这个设置项一直是死的：存了、界面能改、**没有任何代码读它**（2026-09-20 接上）。
@@ -1303,6 +1306,7 @@ public partial class OverlayWindow : Window
             {
                 [scene] = new WindowBounds(Left, Top, Width, Height)
             };
+
 
             try
             {

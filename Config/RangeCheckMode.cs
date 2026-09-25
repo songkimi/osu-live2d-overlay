@@ -6,8 +6,8 @@
 //     · `ConfigHealthCheck.Check(config, env, mode)` —— 体检本身要用
 //     · `HealthCheckConfig.Mode`                    —— 它是配置里的一项（`体检.检查模式`）
 //
-//   2026-09-20 踩过一次：先把它放进 `PluginConfig.cs`、后放进 `AppSettings.cs`，
-//   两次都让"只链接体检文件"的验证工程（`.build-verify/L12check`）编译不过 ——
+//   2026-09-20 ：先把它放进 `PluginConfig.cs`、后放进 `AppSettings.cs`，
+//   两次都让"只链接体检文件"的验证工程编译不过 ——
 //   因为那两个文件里没有它。
 //   → 被两边共用的类型，**独立成文件**，谁需要谁就链接这一个文件。
 //

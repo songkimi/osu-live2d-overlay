@@ -8,7 +8,7 @@
 //     解析层宽松兜底 → 保证不崩
 //     体检报告       → 保证**不静默失效**
 //
-// 【三档的语义，别混】
+// 【三档的语义】
 //   Error   —— 兜不住，这份配置真用不了。必须改掉，**没有"忽略"这个选项**
 //   Warning —— 能兜住，但用户有权知道并决定：改掉，或者**明确点"忽略"**才能继续
 //   Info    —— 不影响运行，只是"你可能不是这么想的"
@@ -56,8 +56,8 @@ public enum HealthLevel
 
 /// <summary>一条体检结果</summary>
 /// <param name="Level">严重程度，语义见文件头</param>
-/// <param name="Message">**给人看**：问题是什么 + 后果，带上具体数值和名字</param>
-/// <param name="FieldPath">**给界面用**：配置里的哪个字段（写法见文件头）</param>
+/// <param name="Message">用户须知：问题是什么 + 后果，带上具体数值和名字</param>
+/// <param name="FieldPath">给界面用：配置里的哪个字段（写法见文件头）</param>
 public sealed record HealthIssue(HealthLevel Level, string Message, string FieldPath);
 
 /// <summary>
@@ -241,7 +241,7 @@ public static class ConfigHealthCheck
     private static void CheckReferencedIds(
         PluginConfig config, HealthEnvironment env, List<HealthIssue> issues, HealthLevel level)
     {
-        // 空的标识不报：留空是合法的"不配这个"，不是"配错了"（新手最容易在这里刷屏）
+        // 空的标识不报：留空是合法的"不配这个"，不是"配错了"
         foreach (var (id, where, field) in ExpressionReferences(config))
             if (!string.IsNullOrWhiteSpace(id) && !env.KnownExpressionIds.Contains(id))
                 issues.Add(new(level, $"{where}引用的表情「{id}」在模型里找不到，它不会播出来", field));

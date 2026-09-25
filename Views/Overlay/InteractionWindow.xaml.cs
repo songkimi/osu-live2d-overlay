@@ -61,12 +61,13 @@ public partial class InteractionWindow : Window
         var ex = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
     }
-
+    private bool _moved;
     private void OnMouseDown(object sender, MouseButtonEventArgs e)
     {
         _lastScreen = PointToScreen(e.GetPosition(this));
         _dragging = CaptureMouse();     // 捕获之后即使鼠标移出窗口也能继续拖
         DebugLog.Write($"影子窗口：鼠标按下（捕获={_dragging}）");
+        _moved = false;
     }
 
     private void OnMouseMove(object sender, MouseEventArgs e)
@@ -82,6 +83,7 @@ public partial class InteractionWindow : Window
 
         _lastScreen = now;
         Dragged?.Invoke(dx, dy);
+        _moved = true;
     }
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
@@ -90,6 +92,6 @@ public partial class InteractionWindow : Window
         _dragging = false;
         ReleaseMouseCapture();
 
-        if (wasDragging) DragFinished?.Invoke();
+        if (wasDragging && _moved) DragFinished?.Invoke();
     }
 }
