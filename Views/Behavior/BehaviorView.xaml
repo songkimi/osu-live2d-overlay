@@ -1,0 +1,715 @@
+<!-- ============================================================
+     BehaviorView.xaml —— 「行为」页
+
+     【这一版是第一刀】页面骨架 + **左栏的标识清单** + 右栏预览。
+     点清单里的一行 → 右边**播一次**。
+
+     【三栏怎么分】定稿 §8.6：左＝标识列表，中＝规则卡片，右＝预览。
+       左栏固定 240（清单不必随窗口长）；中栏与右栏按 1.6 : 1 分剩下的宽度，
+       并各留一个最小宽度 —— 窗口拉宽时预览跟着长（用户要求过"预览栏要跟着窗口长"），
+       窗口很窄时两边都还看得见。
+
+     【中栏为什么现在只有一段说明】
+       四张大卡片是下一刀。这里**不留假控件**（点了没反应的东西），
+       而是把"下一刀做什么、小卡片点了会发生什么"写在页面上 —— 定稿 §1.2 的老规矩。
+       ★ 用户 2026-09-23 定的形状：**四张大卡片竖排一列**，每张里面是若干小卡片；
+       小卡片**也是竖排一行一个**，不铺成 2×2 网格 —— 因为"要塞多少张"由用户定，
+       网格会在奇数张时开天窗。
+
+     【预览区按页面出现】只有这一页和「联动与窗口」用它（定稿 §8.6）：
+       别的页面白扔 1/3 宽度。生命周期由 code-behind 管（露出来才起、切走就挂起）。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.BehaviorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:svc="clr-namespace:OsuLive2dOverlay"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}"
+             Loaded="OnLoaded"
+             Unloaded="OnPageUnloaded">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <!-- ★ 2026-09-23：外层 Grid **不带边距**，边距给里面那层内容。
+         原来边距写在外层、保存栏又在里面用负边距去"凑"到标题栏下面，
+         结果底栏两头都被裁掉一截（用户截图："底部栏两边像被截断了"）。
+         现在的分法是「和别页一样」的做法（见 ModelView）：
+           外层 = 内容（Row 0，带 20 边距） + 底栏（Row 1，**铺满整页宽度**）。 -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="20,20,20,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <!-- ★ 2026-09-23：240 → 260。原来"表情 17 个 · 动作组 1 个"和「重新扫描」挤在一行，
+                     字会被折到第二行（还断在"个"上）—— 用户看图之后提出来的。 -->
+                <ColumnDefinition Width="260" />
+                <ColumnDefinition Width="1.6*" MinWidth="360" />
+                <ColumnDefinition Width="*" MinWidth="300" />
+            </Grid.ColumnDefinitions>
+
+        <!-- 标题（横跨三栏） -->
+        <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,0,0,14">
+            <TextBlock Text="行为" Style="{DynamicResource Text.PageTitle}" />
+
+        </StackPanel>
+
+        <!-- ① 标识清单 -->
+        <Border Grid.Row="1" Grid.Column="0" Style="{DynamicResource Card}" Margin="0,0,12,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 一行、不折、放不下就省略号：**折成两行**比省略号难看得多 -->
+                    <TextBlock Grid.Column="0" Text="{Binding Summary}"
+                               VerticalAlignment="Center"
+                               TextWrapping="NoWrap"
+                               TextTrimming="CharacterEllipsis"
+                               Margin="0,0,8,0"
+                               Style="{DynamicResource Text.Caption}" />
+
+                    <!-- 换了模型之后按一下：这一页只在进来时扫一次，它不会自己知道 -->
+                    <Button Grid.Column="1" Content="重新扫描" Padding="10,4"
+                            Command="{Binding ReloadCommand}" />
+                </Grid>
+
+                <!-- Background/Border 清掉：HC 的 TabControl 自带一层底色，
+                     套在卡片里就成了"卡片里又嵌了一块更深的板"，整列看着又闷又乱。 -->
+                <TabControl Grid.Row="1" Margin="0,10,0,0"
+                            Background="Transparent"
+                            BorderThickness="0">
+                    <!-- 表情 -->
+                    <TabItem Header="表情">
+                        <ListBox ItemsSource="{Binding Expressions}"
+                                 SelectedItem="{Binding SelectedExpression}"
+                                 HorizontalContentAlignment="Stretch"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 PreviewMouseLeftButtonDown="OnRowMouseDown"
+                                 PreviewMouseLeftButtonUp="OnRowMouseUp">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <!-- ★ 2026-09-23：原来是**三行**（名字 / 标识 / 引用次数），
+                                         每项三行、行间又没有分界，整列糊成一片（用户看图提出的）。
+                                         现在两行：名字 + （标识 · 引用次数），并在每项下面拉一条浅线。 -->
+                                    <Border BorderBrush="{DynamicResource Brush.Divider}"
+                                            BorderThickness="0,0,0,1"
+                                            Padding="2,5">
+                                        <StackPanel>
+                                            <!-- 人话名字（没有 cdi3 名字时就是标识本身） -->
+                                            <TextBlock Text="{Binding Name}"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis" />
+
+                                            <!-- 标识 · 引用次数（没名字时只剩引用次数） -->
+                                            <TextBlock Text="{Binding MetaText}"
+                                                       Style="{DynamicResource Text.Caption}"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </TabItem>
+
+                    <!-- 动作（一行 = 一个动作组） -->
+                    <TabItem Header="动作">
+                        <ListBox ItemsSource="{Binding Motions}"
+                                 SelectedItem="{Binding SelectedMotion}"
+                                 HorizontalContentAlignment="Stretch"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 PreviewMouseLeftButtonDown="OnRowMouseDown"
+                                 PreviewMouseLeftButtonUp="OnRowMouseUp">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <!-- 动作那侧同一套两行版式（同一个 record 类型，模板就不该长得不一样） -->
+                                    <Border BorderBrush="{DynamicResource Brush.Divider}"
+                                            BorderThickness="0,0,0,1"
+                                            Padding="2,5">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding MetaText}"
+                                                       Style="{DynamicResource Text.Caption}"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </TabItem>
+                </TabControl>
+
+                <!-- 底部：与列表之间拉一条线隔开（否则最后一行被列表裁掉时看着像画错了） -->
+                <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                    <Border BorderBrush="{DynamicResource Brush.Divider}"
+                            BorderThickness="0,1,0,0"
+                            Margin="0,0,0,8" />
+
+                    <TextBlock Text="点一行试播。" Style="{DynamicResource Text.Caption}" />
+
+                    <!-- ★ 2026-09-23：这里原来还把"扫描/读文件的问题"（红字）显示一遍 ——
+                         和「形象」页的"扫描结果"是**同一份内容**，用户看到同一个警告报两次。
+                         模型是在「形象」页配的，问题也该在那儿说；这一页只管"点了看效果"。
+                         （VM 里那两个属性留着：探针在核对它们，界面不再显示。） -->
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ② 规则卡片区：**一列四张大卡片**（用户 2026-09-23 定的形状）
+             每张里面是 n 张小卡片，**也竖排**（张数由用户定，不铺网格）。
+             点击语义：前一张都是"点一下 = 试播一小段"；常驻组件是"勾上 = 一直挂着"。 -->
+        <ScrollViewer Grid.Row="1" Grid.Column="1"
+                      VerticalScrollBarVisibility="Auto"
+                      Padding="0,0,4,0">
+            <StackPanel>
+
+                <!-- 常态区间 -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,14">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="常态区间" Style="{DynamicResource Text.CardTitle}" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Ranges.Count, StringFormat='共 {0} 条'}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"
+                                           Style="{DynamicResource Text.Caption}" />
+                                <Button Content="新增" Padding="10,4" Command="{Binding BeginNewRangeCommand}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding Ranges}" Margin="0,10,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- 单击小卡片 = 试播一小段（§3.1）。
+                                             用 Button 而不是列表选中：按钮**每点都触发**，
+                                             所以"同一张再看一次"天然可用，也不需要选中态。
+                                             ★ Height="Auto" + MinHeight：见 `Styles.Basic.xaml` 里那条全局
+                                             Button 样式（HC 默认 28 高装不下"Padding + 一行中文"）。 -->
+                                        <Button Height="Auto" MinHeight="40"
+                                                VerticalContentAlignment="Center"
+                                                HorizontalAlignment="Stretch"
+                                                HorizontalContentAlignment="Left"
+                                                BorderBrush="{DynamicResource Brush.Border}"
+                                                BorderThickness="1"
+                                                Padding="12,8"
+                                                Command="{Binding DataContext.PreviewCardCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}">
+                                            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
+                                        </Button>
+
+                                        <!-- ★ 铅笔入口（定稿 §8.3）：编辑一律走弹窗。
+                                             单击卡片已经是预览、双击会误触 —— 所以编辑必须是个**看得见的图标**。 -->
+                                        <Button Grid.Column="1" Margin="6,0,0,0"
+                                                Height="Auto" MinHeight="40" Padding="0" Width="40"
+                                                ToolTip="编辑这一条"
+                                                Command="{Binding DataContext.BeginEditRangeCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}">
+                                            <TextBlock Style="{DynamicResource Icon}" Text="&#xE70F;" />
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- 触发点 -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,14">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="触发点" Style="{DynamicResource Text.CardTitle}" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Triggers.Count, StringFormat='共 {0} 条'}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"
+                                           Style="{DynamicResource Text.Caption}" />
+                                <Button Content="新增" Padding="10,4" Command="{Binding BeginNewTriggerCommand}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding Triggers}" Margin="0,10,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <!-- ★ 2026-09-23（用户看图提出的：文字下半截被切掉）：
+                                         显式 `Height="Auto"` + `MinHeight` —— HandyControl 的 Button
+                                         默认高度装不下"Padding 12,8 + 一行正文"，文字就从下面被裁了。
+                                         本地 Height 会盖掉样式里的高度，所以这一条必须写死在这里。 -->
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Button Height="Auto" MinHeight="40"
+                                                VerticalContentAlignment="Center"
+                                                HorizontalAlignment="Stretch"
+                                                HorizontalContentAlignment="Left"
+                                                BorderBrush="{DynamicResource Brush.Border}"
+                                                BorderThickness="1"
+                                                Padding="12,8"
+                                                Command="{Binding DataContext.PreviewCardCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}">
+                                            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
+                                        </Button>
+
+                                        <Button Grid.Column="1" Margin="6,0,0,0"
+                                                Height="Auto" MinHeight="40" Padding="0" Width="40"
+                                                ToolTip="编辑这一条"
+                                                Command="{Binding DataContext.BeginEditTriggerCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}">
+                                            <TextBlock Style="{DynamicResource Icon}" Text="&#xE70F;" />
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- 失误反应（固定两行：小额 / 大额） -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,14">
+                    <StackPanel>
+                        <TextBlock Text="失误反应" Style="{DynamicResource Text.CardTitle}" />
+
+                        <ItemsControl ItemsSource="{Binding Misses}" Margin="0,10,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <!-- ★ 2026-09-23（用户看图提出的：文字下半截被切掉）：
+                                         显式 `Height="Auto"` + `MinHeight` —— HandyControl 的 Button
+                                         默认高度装不下"Padding 12,8 + 一行正文"，文字就从下面被裁了。
+                                         本地 Height 会盖掉样式里的高度，所以这一条必须写死在这里。 -->
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Button Height="Auto" MinHeight="40"
+                                                VerticalContentAlignment="Center"
+                                                HorizontalAlignment="Stretch"
+                                                HorizontalContentAlignment="Left"
+                                                BorderBrush="{DynamicResource Brush.Border}"
+                                                BorderThickness="1"
+                                                Padding="12,8"
+                                                Command="{Binding DataContext.PreviewCardCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}">
+                                            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
+                                        </Button>
+
+                                        <!-- 失误反应**没有新增、也不能删**（固定两档），所以这里只有铅笔 -->
+                                        <Button Grid.Column="1" Margin="6,0,0,0"
+                                                Height="Auto" MinHeight="40" Padding="0" Width="40"
+                                                ToolTip="编辑这一档"
+                                                Command="{Binding DataContext.BeginEditMissCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}">
+                                            <TextBlock Style="{DynamicResource Icon}" Text="&#xE70F;" />
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- 常驻组件：**点击语义和前一张不同** —— 勾上 = 一直挂着（列出＝开） -->
+                <Border Style="{DynamicResource Card}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="常驻组件" Style="{DynamicResource Text.CardTitle}" />
+                            <TextBlock Grid.Column="1" VerticalAlignment="Center"
+                                       Text="{Binding Persistent.Count, StringFormat='共 {0} 个表情'}"
+                                       Style="{DynamicResource Text.Caption}" />
+                        </Grid>
+
+                        <TextBlock Text="勾上的一直挂着。" Style="{DynamicResource Text.Caption}"
+                                   Margin="0,8,0,0" />
+
+                        <ItemsControl ItemsSource="{Binding Persistent}" Margin="0,8,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Name}"
+                                              IsChecked="{Binding IsOn}"
+                                              Margin="0,0,0,6" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- 表现策略（配置项，改动立刻进内存 + 标脏；生效方式是重载） -->
+                <Border Style="{DynamicResource Card}" Margin="0,14,0,0">
+                    <StackPanel>
+                        <TextBlock Text="表现策略" Style="{DynamicResource Text.CardTitle}" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="时长策略" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="180"
+                                      ItemsSource="{Binding LengthStrategies}"
+                                      SelectedItem="{Binding LengthStrategy}" />
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="表情持续" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <!-- 能用拖的就别让人手打（用户偏好），所以滑块 + 一个读数 -->
+                            <Slider Grid.Column="1" Minimum="100" Maximum="5000"
+                                    SmallChange="50" LargeChange="250"
+                                    VerticalAlignment="Center"
+                                    Value="{Binding ExpressionDurationMs}" />
+                            <TextBlock Grid.Column="2" VerticalAlignment="Center" MinWidth="64"
+                                       TextAlignment="Right" Margin="10,0,0,0"
+                                       Style="{DynamicResource Text.Caption}">
+                                <Run Text="{Binding ExpressionDurationMs, Mode=OneWay}" />
+                                <Run Text="ms" />
+                            </TextBlock>
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="重复触发" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="180"
+                                      ItemsSource="{Binding RepeatStrategies}"
+                                      SelectedItem="{Binding RepeatStrategy}" />
+                        </Grid>
+
+                        <TextBlock Text="这两项改完要重启悬浮窗才生效。"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,12,0,0" />
+                    </StackPanel>
+                </Border>
+                <!-- 语音与口型（两块都是"配置"：改完立刻进内存 + 标脏，底部保存才落盘） -->
+                <Border Style="{DynamicResource Card}" Margin="0,14,0,0">
+                    <StackPanel>
+                        <TextBlock Text="语音与口型" Style="{DynamicResource Text.CardTitle}" />
+
+
+                        <ToggleButton Style="{DynamicResource ToggleSwitch}"
+                                      IsChecked="{Binding VoiceEnabled}"
+                                      HorizontalAlignment="Left" Margin="0,12,0,0" />
+
+                        <!-- 目录：只读框 + 浏览（手打路径太容易错，而错了不报错、只是没声音） -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="语音目录" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <TextBox Grid.Column="1" IsReadOnly="True"
+                                     Text="{Binding VoiceDirectory, Mode=OneWay}" />
+                            <Button Grid.Column="2" Content="浏览" Padding="12,4" Margin="8,0,0,0"
+                                    Click="OnBrowseVoiceFolder" />
+                        </Grid>
+
+                        <!-- 音量 -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="音量" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <Slider Grid.Column="1" Minimum="0" Maximum="1"
+                                    SmallChange="0.05" LargeChange="0.2"
+                                    VerticalAlignment="Center"
+                                    Value="{Binding VoiceVolume}" />
+                            <TextBlock Grid.Column="2" VerticalAlignment="Center" MinWidth="56"
+                                       TextAlignment="Right" Margin="10,0,0,0"
+                                       Style="{DynamicResource Text.Caption}">
+                                <Run Text="{Binding VoiceVolume, Mode=OneWay, StringFormat={}{0:0.00}}" />
+                            </TextBlock>
+                        </Grid>
+
+                        <!-- 最小间隔（节流：防止一直说话） -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="最小间隔" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <Slider Grid.Column="1" Minimum="0" Maximum="5000"
+                                    SmallChange="50" LargeChange="250"
+                                    VerticalAlignment="Center"
+                                    Value="{Binding VoiceMinIntervalMs}" />
+                            <TextBlock Grid.Column="2" VerticalAlignment="Center" MinWidth="64"
+                                       TextAlignment="Right" Margin="10,0,0,0"
+                                       Style="{DynamicResource Text.Caption}">
+                                <Run Text="{Binding VoiceMinIntervalMs, Mode=OneWay}" />
+                                <Run Text="ms" />
+                            </TextBlock>
+                        </Grid>
+
+                        <!-- 情绪清单（只读：一个情绪 = 语音目录下的一个子文件夹） -->
+                        <TextBlock Text="情绪清单" Style="{DynamicResource Text.Label}" Margin="0,14,0,4" />
+                        <TextBlock Text="{Binding VoiceEmotionsText}"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}" />
+
+                        <!-- 口型 -->
+                        <TextBlock Text="口型" Style="{DynamicResource Text.CardTitle}" Margin="0,20,0,0" />
+                        <ToggleButton Style="{DynamicResource ToggleSwitch}"
+                                      IsChecked="{Binding MouthEnabled}"
+                                      HorizontalAlignment="Left" Margin="0,10,0,0" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="参数名" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <TextBox Grid.Column="1"
+                                     Text="{Binding MouthParameter, UpdateSourceTrigger=PropertyChanged}" />
+                        </Grid>
+                        <TextBlock Text="留空 = 自动找。"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,6,0,0" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="幅度" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <Slider Grid.Column="1" Minimum="0" Maximum="1"
+                                    SmallChange="0.05" LargeChange="0.2"
+                                    VerticalAlignment="Center"
+                                    Value="{Binding MouthStrength}" />
+                            <TextBlock Grid.Column="2" VerticalAlignment="Center" MinWidth="56"
+                                       TextAlignment="Right" Margin="10,0,0,0"
+                                       Style="{DynamicResource Text.Caption}">
+                                <Run Text="{Binding MouthStrength, Mode=OneWay, StringFormat={}{0:0.00}}" />
+                            </TextBlock>
+                        </Grid>
+
+                        <TextBlock Text="改完要重启悬浮窗。"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,14,0,0" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+            <!-- ③ 预览区（共享组件；生命周期见 code-behind） -->
+            <svc:PreviewPane x:Name="Preview" Grid.Row="1" Grid.Column="2" />
+        </Grid>
+
+        <!-- 底部保存栏：**在外层、铺满整页宽度**（这样两头不会被裁）。
+             这一页唯一会改配置的是「常驻组件」的勾选。 -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}"
+                BorderThickness="0,1,0,0"
+                Padding="20,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="● 未保存" VerticalAlignment="Center"
+                           Foreground="{DynamicResource Brush.Warning}"
+                           FontWeight="SemiBold"
+                           Visibility="{Binding HasUnsavedChanges, Converter={StaticResource BoolToVis}}"
+                           Style="{DynamicResource Text.Caption}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="放弃" Padding="14,6" Command="{Binding DiscardCommand}" />
+                    <Button Content="保存" Padding="18,6" Margin="8,0,0,0"
+                            Command="{Binding SaveCommand}"
+                            Background="{DynamicResource Brush.Primary}"
+                            Foreground="{DynamicResource Brush.TextOnPrimary}"
+                            BorderBrush="{DynamicResource Brush.Primary}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 编辑弹窗（定稿 §8.3：卡片只做摘要与预览入口，**编辑一律走弹窗**）——
+             这一刀先只服务「常态区间」；触发点 / 失误反应的表单和它一样（多两个槽位），下一刀照抄。 -->
+        <Border Grid.Row="0" Grid.RowSpan="2"
+                Background="#66000000"
+                Visibility="{Binding IsEditing, Converter={StaticResource BoolToVis}}">
+            <Border Style="{DynamicResource Card}"
+                    MaxWidth="440" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel MinWidth="380">
+                    <TextBlock Text="{Binding EditTitle}" Style="{DynamicResource Text.CardTitle}" />
+
+                    <!-- 最小值 -->
+                    <TextBlock Text="{Binding EditNumberLabel}" Style="{DynamicResource Text.Label}" Margin="0,14,0,4" />
+                    <TextBox Text="{Binding EditMinText, UpdateSourceTrigger=PropertyChanged}" />
+
+                    <!-- 最大值（可以"以上"不封顶） -->
+                    <StackPanel Visibility="{Binding IsRangeEdit, Converter={StaticResource BoolToVis}}">
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0" Text="最大连击" VerticalAlignment="Center"
+                                   Style="{DynamicResource Text.Label}" />
+                        <CheckBox Grid.Column="1" Content="以上（不封顶）"
+                                  VerticalAlignment="Center"
+                                  IsChecked="{Binding EditMaxUnlimited}" />
+                    </Grid>
+
+                    <TextBox Text="{Binding EditMaxText}" Margin="0,6,0,0"
+                             IsEnabled="{Binding EditMaxEnabled}" />
+                    </StackPanel>
+
+                    <!-- 表情（下拉：存标识、显示人话名字） -->
+                    <!-- 区间只要一个表情；触发点 / 失误是三槽位（§3.1 的"反应"） -->
+                    <StackPanel Visibility="{Binding IsRangeEdit, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="表情" Style="{DynamicResource Text.Label}" Margin="0,14,0,4" />
+                        <ComboBox ItemsSource="{Binding ExpressionChoices}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Id"
+                                  SelectedValue="{Binding EditExpression}" />
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding IsReactionEdit, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="瞬时表情" Style="{DynamicResource Text.Label}" Margin="0,14,0,4" />
+                        <ComboBox ItemsSource="{Binding ExpressionChoices}"
+                                  DisplayMemberPath="Label" SelectedValuePath="Id"
+                                  SelectedValue="{Binding EditReactionExpression}" />
+
+                        <TextBlock Text="动作" Style="{DynamicResource Text.Label}" Margin="0,12,0,4" />
+                        <ComboBox ItemsSource="{Binding MotionChoices}"
+                                  DisplayMemberPath="Label" SelectedValuePath="Id"
+                                  SelectedValue="{Binding EditReactionAction}" />
+
+                        <TextBlock Text="语音情绪" Style="{DynamicResource Text.Label}" Margin="0,12,0,4" />
+                        <ComboBox ItemsSource="{Binding EmotionChoices}"
+                                  DisplayMemberPath="Label" SelectedValuePath="Id"
+                                  SelectedValue="{Binding EditReactionEmotion}" />
+
+                        <TextBlock Text="预览不播语音。"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,8,0,0" />
+                    </StackPanel>
+
+                    <!-- 出错时当场说（别让用户点了没反应） -->
+                    <TextBlock Text="{Binding EditError}"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource Brush.Danger}"
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,10,0,0"
+                               Visibility="{Binding HasEditError, Converter={StaticResource BoolToVis}}" />
+
+                    <Grid Margin="0,18,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- 删除只在"编辑已有的"时出现（新增时没有可删的） -->
+                        <Button Grid.Column="0" Content="删除" Padding="14,6" HorizontalAlignment="Left"
+                                Command="{Binding DeleteEditingCommand}"
+                                Visibility="{Binding CanDelete, Converter={StaticResource BoolToVis}}" />
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Button Content="取消" Padding="14,6" Command="{Binding CancelEditCommand}" />
+                            <Button Content="保存改动" Padding="18,6" Margin="8,0,0,0"
+                                    Command="{Binding SaveEditCommand}"
+                                    Background="{DynamicResource Brush.Primary}"
+                                    Foreground="{DynamicResource Brush.TextOnPrimary}"
+                                    BorderBrush="{DynamicResource Brush.Primary}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="要按底部「保存」才落盘。"
+                               TextWrapping="Wrap"
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,10,0,0" />
+                </StackPanel>
+            </Border>
+        </Border>
+
+        <!-- Toast：保存/放弃的回执 -->
+        <Border x:Name="ToastPanel"
+                Grid.Row="0" Grid.RowSpan="2"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,60"
+                Background="{DynamicResource Brush.TextPrimary}"
+                CornerRadius="6" Padding="16,10"
+                MouseLeftButtonUp="OnToastClick">
+            <TextBlock x:Name="ToastText"
+                       Foreground="{DynamicResource Brush.Surface}"
+                       Style="{DynamicResource Text.Body}" />
+        </Border>
+    </Grid>
+</UserControl>

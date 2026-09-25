@@ -1,0 +1,121 @@
+<!-- ============================================================
+     OverviewView.xaml —— 「概览」页（软件的门面）
+
+     这一页**只读**：不编辑任何东西，只把"现在的状态"放到眼前。
+     启动 / 停止悬浮窗在窗口右上角（不在这里重复入口），
+     一键自检在「数据与档案 → 配置体检」（那儿有分组、定位、忽略）。
+
+     骨架与别页一致（SettingIndex + Toast），所以看得出是同一个软件。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.OverviewView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}"
+             Loaded="OnLoaded">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <Grid>
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+            <StackPanel Margin="20">
+
+                <TextBlock Text="概览" Style="{DynamicResource Text.PageTitle}" />
+                <TextBlock Text="" Margin="0,0,0,12" />
+
+                <!-- ① 现在是什么状态 -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="现在的状态" Style="{DynamicResource Text.CardTitle}" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="当前档案" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding ProfileName}" Style="{DynamicResource Text.Body}" />
+                                <TextBlock Text="● 未保存" Margin="10,0,0,0" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Brush.Warning}"
+                                           FontWeight="SemiBold"
+                                           Style="{DynamicResource Text.Caption}"
+                                           Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="当前模型" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <TextBlock Grid.Column="1" Text="{Binding ModelSummary}"
+                                       TextWrapping="Wrap"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Body}" />
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="配置档案" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <TextBlock Grid.Column="1" Text="{Binding ProfileCountText}"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Body}" />
+                        </Grid>
+
+                        <Border BorderBrush="{DynamicResource Brush.Divider}" BorderThickness="0,1,0,0"
+                                Margin="0,14,0,10" />
+                        <TextBlock Text="启动 / 停止悬浮窗在窗口右上角。"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ② 快速切档案 -->
+                <Border Style="{DynamicResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="快速切换档案" Style="{DynamicResource Text.CardTitle}" />
+
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <ComboBox ItemsSource="{Binding Profiles}"
+                                      SelectedItem="{Binding SelectedProfile}"
+                                      MinWidth="200" VerticalAlignment="Center" />
+                            <Button Content="切换" Padding="14,6" Margin="8,0,0,0"
+                                    Command="{Binding SwitchProfileCommand}" />
+                        </StackPanel>
+
+                        <Border BorderBrush="{DynamicResource Brush.Divider}" BorderThickness="0,1,0,0"
+                                Margin="0,12,0,10" />
+                        <TextBlock Text="切换后悬浮窗要重启才生效。"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Toast：切换的回执 -->
+        <Border x:Name="ToastPanel"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,24"
+                Background="{DynamicResource Brush.TextPrimary}"
+                CornerRadius="6" Padding="16,10"
+                MouseLeftButtonUp="OnToastClick">
+            <TextBlock x:Name="ToastText"
+                       Foreground="{DynamicResource Brush.Surface}"
+                       Style="{DynamicResource Text.Body}" />
+        </Border>
+    </Grid>
+</UserControl>

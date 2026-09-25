@@ -1,7 +1,47 @@
+<!-- ============================================================
+     App.xaml —— 应用入口：只放启动配置与全局资源，不放逻辑
+     ============================================================
+     【2026-09-20 启动流程变了】（定稿决策 26）
+       以前：StartupUri = OverlayWindow → 双击就出悬浮窗
+       现在：StartupUri = MainWindow（配置界面）→ 配置界面是主窗口，
+             悬浮窗由用户在配置界面里点「启动悬浮窗」拉起来。
+
+     为什么：配置界面要成为软件的门面，而且它要管悬浮窗的生死。
+     直接关掉配置界面 = 退出整个软件（ShutdownMode 保持 OnMainWindowClose）。
+
+     【资源字典的顺序不能改】
+       ① HandyControl 的皮肤与控件样式（底座）
+       ② 我们的 Design Token（颜色/圆角/字号的定义）
+       ③ HCOverrides（用②的颜色覆盖①里同名的笔刷）—— **必须在①②之后**
+       ④ 我们自己的基础样式（卡片/导航/文字层级）
+     顺序反了覆盖就不生效，而且**不会报错**，只会"颜色怎么没变"。
+     ============================================================ -->
 <Application x:Class="OsuLive2dOverlay.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             StartupUri="Views/OverlayWindow.xaml"
+             StartupUri="Views/Shell/MainWindow.xaml"
              ShutdownMode="OnMainWindowClose">
-    <Application.Resources />
+    <!-- ★ StartupUri 是**按路径找的**，编译期不检查 ——
+         2026-09-20 把 Views/ 分目录时，路径改了但编译照样 0 错误，
+         一启动才会报"找不到资源"。把 View 挪窝时这里是必改的一处。 -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+
+                <!-- ① HandyControl：基础皮肤 + 控件样式 -->
+                <ResourceDictionary Source="pack://application:,,,/HandyControl;component/Themes/SkinDefault.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/HandyControl;component/Themes/Theme.xaml" />
+
+                <!-- ② Design Token（浅色）。切深色主题时由代码换成 Tokens.Dark -->
+                <ResourceDictionary Source="pack://application:,,,/Resources/Styles/Tokens.Light.xaml" />
+
+                <!-- ③ 覆盖 HC 的主题色 -->
+                <ResourceDictionary Source="pack://application:,,,/Resources/Styles/HCOverrides.xaml" />
+
+                <!-- ④ 我们自己的基础样式 -->
+                <ResourceDictionary Source="pack://application:,,,/Resources/Styles/Styles.Basic.xaml" />
+
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
 </Application>

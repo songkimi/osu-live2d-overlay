@@ -23,20 +23,53 @@ public partial class OverlayWindow : Window
 {
     // 热键编号：这是**应用自己的概念**（不是 Win32 的），所以留在窗口类里。
     // 修饰键、虚拟键码、窗口消息、扩展样式位、P/Invoke 全在 Infrastructure/Win32.cs。
-    private const int HOTKEY_TOGGLE_MODE = 9001;
-    private const int HOTKEY_QUIT = 9002;
-    private const int HOTKEY_RELOAD = 9003;
-    private const int HOTKEY_TEST_1 = 9004;
-    private const int HOTKEY_TEST_2 = 9005;
-    private const int HOTKEY_TEST_3 = 9006;
-    private const int HOTKEY_TEST_VOICE = 9007;
-    private const int HOTKEY_TEST_RANGE = 9008;
+    //
+    // ★ 2026-09-23 瘦身：删掉了 9003~9008 六个热键 ——
+    //   `Ctrl+Alt+R`（重载页面）与 `Ctrl+Alt+1/2/3/4/V` 五个开发期测试键
+    //   （模拟连击 / 断连击 / 区间 / 试听语音）。用户明确说不再用它们。
+    //   剩下这两个**是功能**，而且都能在设置界面里改（只读展示，见定稿决策 57）：
+    private const int HOTKEY_TOGGLE_MODE = 9001;    // 临时允许交互（拖动窗口用）
+    private const int HOTKEY_QUIT = 9002;           // 结束悬浮窗
+
+    /// <summary>
+    /// 宿主窗口的**默认尺寸**（XAML 里的 `Width`/`Height` 就是引的这两个）。
+    ///
+    /// 单独拎成常量，是因为**设置界面的预览区也要用它**：
+    /// 某一档没设过窗口尺寸时，预览要按默认尺寸画那个边框 ——
+    /// 否则它只能显示一个"用户其实没设过"的数字，那是在撒谎。
+    /// </summary>
+    public const double DefaultWidth = 430;
+    public const double DefaultHeight = 620;
 
     /// <summary>窗口右下角用来缩放的"抓取区"边长（应用自己的约定，不是系统的）</summary>
     private const double ResizeGripSize = 18;
 
     private readonly PluginConfig _config;
-    private readonly TosuClient _client = new();
+
+    /// <summary>
+    /// 当前档案文件的完整路径（`profiles\&lt;档案名&gt;.json`）。
+    ///
+    /// 存下来是因为**保存窗口位置时要写回同一个文件**。
+    /// 以前那个地方自己拼了一遍 `Path.Combine(exeDir, "config.json")` ——
+    /// 于是"读哪份"和"写哪份"是两份独立的真相，加了多档案之后必然对不上。
+    /// </summary>
+    private readonly string _configPath;
+
+    /// <summary>
+    /// 软件设置（settings.json）—— 悬浮窗也要读它。
+    ///
+    /// 因为**「调试模式」搬到了那边**（2026-09-20 拆档案/设置）。
+    /// 它描述的是"软件怎么运行"（要不要在画面上显示开发期信息），不是"角色怎么演"，
+    /// 所以它跟着 settings.json 走、**不随档案切换**。
+    /// </summary>
+    private readonly AppSettings _settings;
+
+    /// <summary>
+    /// 数据源客户端。**地址从设置里来**（★ 2026-09-23），所以在构造函数里才创建 ——
+    /// 原来这里是字段初始化器里的 `new()`，而地址写死在 TosuClient 内部，
+    /// 于是设置界面上的「监听地址 / 监听端口」两个框改了没有任何效果（**而且不报错**）。
+    /// </summary>
+    private readonly TosuClient _client;
     private readonly ComboTracker _tracker;
 
     /// <summary>
@@ -62,6 +95,25 @@ public partial class OverlayWindow : Window
     /// </summary>
     private readonly GameStateTracker _sceneTracker = new();
 
+    /// <summary>
+    /// 上一次发给页面的"在不在加载"。
+    ///
+    /// 为什么要单独记：加载**不改变场景**（场景仍是上一个界面，窗口不该动），
+    /// 所以 `GameStateTracker.Update` 那时返回 null。只盯着返回值的话，
+    /// "加载开始 / 加载结束"这两件事就永远发现不了，透明度也就永远不刷新。
+    /// </summary>
+    private bool _loadingSent;
+
+    /// <summary>
+    /// 上一次收到 / 发出去的**游玩模式**（`gameplay.gameMode` 翻译过来的）。
+    ///
+    /// 它决定「打歌」那一档用哪份站位（决策 50）。和 `_loadingSent` 一样，
+    /// 它**不改变场景**却改变"该发什么"，所以要单独记着才发现得了变化。
+    ///
+    /// null = 认不出的模式（比如 tosu 报了个 7）—— 那时不按模式挑，用场景自己那份站位。
+    /// </summary>
+    private GameMode? _currentMode;
+
     private IntPtr _hwnd = IntPtr.Zero;
     private bool _isRunningMode = true;
 
@@ -71,6 +123,25 @@ public partial class OverlayWindow : Window
     /// 初值 true 与启动时"还不知道在哪个界面"的默认选择一致，免得启动就抖一下。
     /// </summary>
     private bool _clickThroughApplied = true;
+
+    /// <summary>
+    /// 收到过第一包**能用**的 tosu 数据没有（★ 2026-09-23）。
+    ///
+    /// 它只为一件事存在：「启动悬浮窗时自动启动 tosu/osu」之后，
+    /// 按「启动等待秒数」等一段时间还没数据就**说一声** ——
+    /// 那是自动启动唯一可能静默失败的地方（tosu 起来了但端口不对、或者根本没起来）。
+    /// </summary>
+    private bool _firstDataAnnounced;
+
+    /// <summary>
+    /// 第一包能用的数据到了 —— **整条链通了**的唯一可靠信号。
+    ///
+    /// 为什么要单独抛一个事件，而不是让外面去看 <see cref="TosuSnapshot"/>：
+    /// `OnSnapshotReceived` 里有一句"什么都没变就提前 return"（场景、加载、模式都没变），
+    /// 把通知挂在里面，**第一包数据有极大概率正好落在那句 return 上**，
+    /// 于是"等到了"这件事永远不会被报告 —— 又是一种"看起来接上了、其实没有"。
+    /// </summary>
+    public event Action? FirstUsableDataReceived;
 
     /// <summary>
     /// 影子窗口：专门负责接鼠标。本窗口里放透明元素是接不到鼠标的 ——
@@ -84,8 +155,6 @@ public partial class OverlayWindow : Window
     // ---- 语音 ----
     private string? _voiceDir;                             // 解析后的语音目录（没有就不映射）
     private object? _voicePayload;                         // 发给页面的"情绪 → 地址"表
-    private readonly List<string> _voiceEmotionNames = new();   // 测试热键按顺序试听用
-    private int _voiceTestIndex;
 
     /// <summary>
     /// XAML 里的默认窗口尺寸（构造时取一次）。
@@ -107,8 +176,16 @@ public partial class OverlayWindow : Window
         // 拿它当默认值，等于又把上一个界面的尺寸借给了下一个界面（那正是要修的 bug）。
         _defaultSize = (Width, Height);
 
+        // 先读软件设置（"当前是哪个档案"记在里面），再由它定出该读哪个档案文件 ——
+        // 顺序和 App.OnStartup 一致，路径规则也共用 ProfileLocator 那一份
         var exeDir = AppContext.BaseDirectory;
-        _config = PluginConfig.Load(Path.Combine(exeDir, "config.json"));
+        var settingsPath = Path.Combine(exeDir, "settings.json");
+        var legacyConfig = Path.Combine(exeDir, ProfileLocator.LegacyFileName);
+
+        _settings = AppSettings.Load(settingsPath, legacyConfig);
+        _configPath = ProfileLocator.EnsureProfile(exeDir, _settings.Profile.Current, legacyConfig);
+        _config = PluginConfig.Load(_configPath);
+
         _webDir = Path.Combine(exeDir, "web");
         // 常态区间来自配置：省略「最大」表示"以上"，补成 int.MaxValue 交给状态机（它只认闭区间）
         _tracker = new ComboTracker(
@@ -118,7 +195,9 @@ public partial class OverlayWindow : Window
         // 界面档位：配置加载时已经保证非空（老配置会被迁移成四档），这里只是兜底
         _scenes = _config.Scenes ?? new SceneProfiles();
 
-        DebugLog.Start(_config.DebugMode);
+        // 日志已经在 App.OnStartup 里统一初始化过（整个程序只调一次）。
+        // 这里**不能**再 Start —— 那会把当天已经写下的那份日志文件重置掉。
+        DebugLog.Write("悬浮窗已启动");
 
         // 配置体检：门槛配反了不会崩，但"小额"那一档就永远轮不到 —— 在日志里说一声，
         // 免得改数字的人（包括我自己）对着配置猜半天。
@@ -130,7 +209,28 @@ public partial class OverlayWindow : Window
         // 这样即使浏览器那一层出问题，也能立刻知道是"语音配错了"还是"页面没起来"。
         _voicePayload = BuildVoicePayload();
 
+        // 数据源地址**从设置里来**（★ 2026-09-23）。
+        // 写进日志是刻意的：连不上时第一个要回答的问题就是"它到底在连哪个地址"，
+        // 而配置里的 IP / 端口有两处（设置界面、JSON），靠翻文件猜太慢。
+        _client = new TosuClient(_settings.DataSource.WebSocketUrl);
+        DebugLog.Write($"tosu 地址：{_client.Url}（改了要重启悬浮窗才生效）");
+
         _client.ComboUpdated += OnComboUpdated;
+
+        // 第一包数据单独记一次（见 FirstUsableDataReceived 的说明）。
+        // 必须在调用 OnSnapshotReceived **之前**判定 —— 那里面第一句就可能提前 return。
+        _client.SnapshotReceived += snapshot =>
+        {
+            if (!_firstDataAnnounced)
+            {
+                _firstDataAnnounced = true;
+                DebugLog.Write("收到第一包 tosu 数据（连接已真正打通）");
+                FirstUsableDataReceived?.Invoke();
+            }
+
+            OnSnapshotReceived(snapshot);
+        };
+
         _client.SnapshotReceived += OnSnapshotReceived;
 
         // tosu 断了（osu 退出 / tosu 自己关了）→ 界面状态回到"不知道"。
@@ -138,14 +238,12 @@ public partial class OverlayWindow : Window
         // 断开之后没有任何数据再推过来，状态机自己永远不会变。
         _client.Disconnected += () =>
         {
-            _sceneTracker.Update(null, false);
+            _sceneTracker.Update(null, hp: null);   // state 为 null → Unknown，hp 传什么都一样
             ApplyScene();
         };
-        _client.StatusChanged += text =>
-        {
-            DebugLog.Write("tosu：" + text);
-            Dispatcher.Invoke(() => ShowStatus(text, autoHide: false));
-        };
+        // tosu 自己在报状态（连上了 / 断了 / 找不到 tosu 进程）。**只进日志**：
+        // 悬浮窗画面上不写任何字 —— 理由见 `ShowStatus` 撤掉那一段。
+        _client.StatusChanged += text => DebugLog.Write("tosu：" + text);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -184,18 +282,49 @@ public partial class OverlayWindow : Window
 
         ApplyMode();
 
-        // 热键都挂在同一个修饰键组合下（Ctrl+Alt + 字母/数字）
-        void Hotkey(int id, uint key) => Win32.RegisterHotkey(_hwnd, id, Win32.MOD_CONTROL | Win32.MOD_ALT, key);
+        // ------------------------------------------------------------
+        // 热键注册（★ 2026-09-23：**改成读配置**）
+        //
+        // 原来这里是写死的：`Hotkey(HOTKEY_QUIT, VK_Q)`、`Hotkey(HOTKEY_TOGGLE_MODE, VK_T)`。
+        // 于是配置里那三个热键字段一个都没被读过，而且埋着一个直接骗用户的矛盾：
+        // 文档与配置默认值写的是"临时交互 = Ctrl+Alt+E"，代码里注册的却是 **T** ——
+        // 差一个字母，用户照着界面提示按键**按不出来**。
+        // 现在走 `HotkeyParser`：人写的 `"Ctrl+Alt+E"` → `MOD_CONTROL|MOD_ALT` + `VK_E`。
+        //
+        // **注册失败绝不静默**（定稿 §3.1）：被别的软件占用时用户会以为软件坏了，
+        // 所以失败要写日志、而且日志里说清是哪一个热键。
+        // ------------------------------------------------------------
+        void Hotkey(int id, string what, string? configured, uint fallbackModifiers, uint fallbackKey)
+        {
+            var parsed = HotkeyParser.Parse(configured);
 
-        Hotkey(HOTKEY_TOGGLE_MODE, Win32.VK_T);
-        Hotkey(HOTKEY_QUIT, Win32.VK_Q);
-        Hotkey(HOTKEY_RELOAD, Win32.VK_R);
-        // 测试热键：不开游戏也能验证"消息 → 表情/语音"这一段通不通
-        Hotkey(HOTKEY_TEST_1, Win32.VK_1);
-        Hotkey(HOTKEY_TEST_2, Win32.VK_2);
-        Hotkey(HOTKEY_TEST_3, Win32.VK_3);
-        Hotkey(HOTKEY_TEST_RANGE, Win32.VK_4);
-        Hotkey(HOTKEY_TEST_VOICE, Win32.VK_V);
+            var modifiers = parsed?.Modifiers ?? fallbackModifiers;
+            var key = parsed?.VirtualKey ?? fallbackKey;
+
+            if (parsed is null)
+            {
+                DebugLog.Write($"热键「{what}」配置里写的是「{configured}」，认不出来 → " +
+                               $"先用默认的 {HotkeyParser.Normalize(fallbackModifiers, fallbackKey)}");
+            }
+
+            if (!Win32.RegisterHotkey(_hwnd, id, modifiers, key))
+                DebugLog.Write($"热键注册失败（多半被别的软件占了）：{what} = " +
+                               HotkeyParser.Normalize(modifiers, key));
+        }
+
+        var hotkeys = _settings.Overlay;
+
+        // 这两个**从配置来**（默认值就在 WindowSettings 里）
+        // 注意 `VK_E` 没在 `Win32` 里定义（那边只挑了用得着的几个）——
+        // 字母的虚拟码就是它大写的 ASCII 码，所以直接写 `'E'`，不必要为它再加常量。
+        Hotkey(HOTKEY_TOGGLE_MODE, "临时允许交互", hotkeys.TempInteractiveHotkey,
+               Win32.MOD_CONTROL | Win32.MOD_ALT, 'E');
+        Hotkey(HOTKEY_QUIT, "结束悬浮窗", hotkeys.StopHotkey,
+               Win32.MOD_CONTROL | Win32.MOD_ALT, Win32.VK_Q);
+
+        // ★ 2026-09-23：原来这里还注册了 `Ctrl+Alt+R`（重载页面）与五个测试热键
+        //   （`1/2/3/4/V`）。它们已经删掉 —— 见上面 `测试触发` 那一段的说明。
+        //   于是**整个悬浮窗现在只有两个热键**，而且两个都能在设置界面里看到/改。
 
         if (HwndSource.FromHwnd(_hwnd) is { } source)
             source.AddHook(WndProc);
@@ -231,10 +360,9 @@ public partial class OverlayWindow : Window
             //   osu 全屏时本窗口经常处于被覆盖状态，两种保护都无害，也可能省掉一次偶发故障。
             var options = new CoreWebView2EnvironmentOptions
             {
-                AdditionalBrowserArguments =
-                    "--enable-unsafe-swiftshader --autoplay-policy=no-user-gesture-required " +
-                    "--disable-direct-composition " +
-                    "--disable-features=CalculateNativeWinOcclusion"
+                // 参数原文搬去了 PageHost —— 它是"把页面喂起来"这件事的一部分，
+                // 而设置界面的预览区要用**同一套**（少一个参数就可能没有 WebGL）。
+                AdditionalBrowserArguments = PageHost.BrowserArguments
             };
 
             // 用户数据目录用 WebView2 的默认位置（exe 同级的 osu-live2d-overlay.exe.WebView2）
@@ -253,11 +381,11 @@ public partial class OverlayWindow : Window
             core.Settings.AreDevToolsEnabled = true;      // 调试用；正式发布可改 false
 
             if (!Directory.Exists(_config.Model.Directory))
-                ShowStatus("找不到模型目录：" + _config.Model.Directory, autoHide: false);
+                DebugLog.Write("找不到模型目录：" + _config.Model.Directory);
 
-            // 语音目录：解析成"情绪 → 地址"的表，随 init 一起发给页面（已在构造时算好）
-            if (_voiceDir is not null)
-                DebugLog.Write($"语音目录已映射：{_voiceDir}（{_voiceEmotionNames.Count} 类情绪）");
+            // 语音目录：解析成"情绪 → 地址"的表，随 init 一起发给页面。
+            // 已经**在构造时**算好了 —— 那句"N 类情绪"的日志也在那边写
+            // （★ 2026-09-23：原来这里靠一个只为测试热键服务的字段数情绪，现在那个字段删了）
 
             // 先把模型扫一遍 —— 配置里引用的是"标识"，补丁要靠这份扫描结果把标识翻回文件路径
             var scan = ModelScanner.Scan(_config.Model.Directory, _config.Model.Entry);
@@ -274,25 +402,23 @@ public partial class OverlayWindow : Window
                                    .Select(r => $"{r.Id} → {_catalog.DisplayName(r.Id)}")));
             }
 
-            // 生成"补过资源"的模型定义到临时目录，再把四个目录映射成虚拟主机
-            var patchDir = Path.Combine(Path.GetTempPath(), "osu-live2d-overlay");
+            // 生成"补过资源"的模型定义到临时目录，再把四个目录映射成虚拟主机。
+            // 目录名带 "overlay"：设置界面的预览区有**它自己的**一份
+            // （它读的可能是还没保存的配置，共用目录会互相覆盖，见 PageHost.PatchDirectoryFor）。
+            var patchDir = PageHost.PatchDirectoryFor("overlay");
             try
             {
                 var patch = ModelHost.WritePatchedModel(_config, scan, patchDir);
 
                 // 配置里写了模型里没有的标识（多半是打错字）—— 这是"不修就没法用"，必须说出来
-                foreach (var problem in patch.Problems)
-                {
-                    DebugLog.Write("补丁：" + problem);
-                    ShowStatus(problem, autoHide: false);
-                }
+                foreach (var problem in patch.Problems) DebugLog.Write("补丁：" + problem);
 
-                ShowStatus($"模型已补丁：{scan.Expressions.Count} 个表情 / {scan.Motions.Count} 个动作 → {Path.GetFileName(patch.Path)}",
-                           autoHide: true);
+                DebugLog.Write($"模型已补丁：{scan.Expressions.Count} 个表情 / " +
+                               $"{scan.Motions.Count} 个动作 → {Path.GetFileName(patch.Path)}");
             }
             catch (Exception ex)
             {
-                ShowStatus("生成模型补丁失败：" + ex.Message, autoHide: false);
+                DebugLog.Write("生成模型补丁失败：" + ex.Message);
             }
 
             ModelHost.SetupVirtualHosts(_webDir, _config.Model.Directory, patchDir, _voiceDir,
@@ -301,55 +427,35 @@ public partial class OverlayWindow : Window
             core.WebMessageReceived += OnWebMessage;
             core.NavigationCompleted += (_, args) =>
             {
-                DebugLog.Write("页面导航完成：成功=" + args.IsSuccess + " " + args.WebErrorStatus);
-                if (!args.IsSuccess)
-                    ShowStatus("页面加载失败：" + args.WebErrorStatus, autoHide: false);
-                else
-                    SendInit();
+                // 把"最后落在哪个地址"也记下来：落在浏览器自己的错误页上时，
+                // 那个地址是 `chrome-error://chromewebdata/` 而不是我们的页面 ——
+                // 这是"悬浮窗白屏但日志里什么都没有"唯一能抓住的线索（同预览区那边的说明）。
+                DebugLog.Write("页面导航完成：成功=" + args.IsSuccess + " " + args.WebErrorStatus +
+                               " 实际地址=" + core.Source);
+
+                if (args.IsSuccess) SendInit();
             };
 
-            var startUrl = $"https://{ModelHost.AppHost}/index.html";
+            var startUrl = PageHost.EntryUrl;
             DebugLog.Write("开始导航：" + startUrl);
             core.Navigate(startUrl);
         }
         catch (Exception ex)
         {
             DebugLog.Write("WebView2 初始化异常：" + ex);
-            ShowStatus("WebView2 初始化失败：" + ex.Message, autoHide: false);
         }
     }
 
-    /// <summary>把模型地址、待机动作、视图参数、表情持续时间、语音表告诉页面</summary>
+    /// <summary>
+    /// 把模型地址、待机动作、视图参数、表情持续时间、语音表告诉页面。
+    ///
+    /// 2026-09-20：报文的**字段形状搬去了 `PageHost.BuildInitPayload`** ——
+    /// 设置界面的预览区要用同一个页面、同一包协议。
+    /// 两边各写一份的话，改一处漏一处 = 页面上"某个功能莫名其妙不生效"，
+    /// 而且**两边表现还不一样**，那是最难查的一类。
+    /// </summary>
     private void SendInit()
-    {
-        // 用补丁目录里的模型定义（它内部把贴图/动作/表情都指向了 model.local 的绝对地址）
-        var url = $"https://{ModelHost.PatchHost}/{ModelHost.PatchedFileName}";
-
-        SendJson(new
-        {
-            type = "init",
-            modelUrl = url,
-            // 「待机动作」填的是标识（组名）。未注册的（VTS 成品的 待机.motion3）会被补丁注册成
-            // 同名组，已注册的（官方模型的 Idle）直接用 —— 两种情况页面调用的方式完全一样。
-            idle = _config.Model.IdleGroup,
-            view = new { zoom = _config.View.Zoom, offsetY = _config.View.OffsetY, offsetX = _config.View.OffsetX },
-            expressionDurationMs = _config.Performance.ExpressionDurationMs,
-            debug = _config.DebugMode,
-            voice = _voicePayload,
-            // 常驻层：用户勾的"一直在"的形象元素（鞋子、高光…）。
-            // 整批发给页面，之后由页面自己管生死；空列表就什么都不挂。
-            persistent = _config.PersistentParts
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Select(id => new { id = id.Trim(), @params = _catalog.ParametersOf(id) })
-                .ToList(),
-            mouth = new
-            {
-                enabled = _config.Mouth.Enabled,
-                parameter = _config.Mouth.Parameter,
-                strength = Math.Clamp(_config.Mouth.Strength, 0.0, 1.0)
-            }
-        });
-    }
+        => SendJson(PageHost.BuildInitPayload(_config, _settings.DebugMode, _voicePayload, _catalog));
 
     /// <summary>
     /// 解析语音配置 → 发给页面的表：{ enabled, volume, minIntervalMs, emotions:[{name,urls}], problem }
@@ -387,8 +493,7 @@ public partial class OverlayWindow : Window
         if (emotions.Count == 0)
             return new { enabled = false, problem = problems.FirstOrDefault() ?? "语音目录里没有可用的音频文件" };
 
-        _voiceEmotionNames.Clear();
-        _voiceEmotionNames.AddRange(emotions.Select(e => e.Name));
+        DebugLog.Write($"语音目录已映射：{voiceRoot}（{emotions.Count} 类情绪）");
 
         return new
         {
@@ -421,98 +526,25 @@ public partial class OverlayWindow : Window
         }
         catch (Exception ex)
         {
-            ShowStatus("向页面发消息失败：" + ex.Message, autoHide: false);
+            DebugLog.Write("向页面发消息失败：" + ex.Message);
         }
     }
 
-    // ---------------- 测试触发（Ctrl+Alt+1/2/3）----------------
+    // ---------------- 测试触发 ----------------
+    //
+    // ★ 2026-09-23 整段删掉了：四个测试方法（模拟跨阈值 / 模拟三种断连击 /
+    //   轮流试听情绪 / 依次推过各区间）与它们的热键 `Ctrl+Alt+1/2/3/4/V`，
+    //   以及 `RangeTestCombos` 那组假连击值和三个计数器字段。
+    //   用户明确说"不会再使用任何测试时的热键和方法了"。
+    //
+    //   它们当初的用途是"不开游戏也能验证 消息→表情/语音 这条链"，
+    //   现在这条链已经由**真实打歌**反复验证过，测试键反而成了负担：
+    //   它要额外维护五个热键的注册/注销，而且 `SendTestRange` 还得刻意绕过
+    //   生产路径上那道场景判断 —— 那种"测试专用旁路"最容易和生产代码走岔。
+    //
+    //   要再验证这条链，走真路：`Logic/ComboTracker` 有控制台穷举测试
+    //   （`.build-verify/L03check` 等），端到端就开一局游戏。
 
-    /// <summary>测试用：按配置里第 index 条连击触发造一个 Step 事件，走正式处理路径</summary>
-    private void SendTestCombo(int index)
-    {
-        var trigger = _config.ComboTriggers.ElementAtOrDefault(index);
-        if (trigger is null)
-        {
-            ShowStatus($"配置里没有第 {index + 1} 条连击触发", autoHide: false);
-            return;
-        }
-
-        var evt = new ComboEvent(
-            Kind: ComboEventKind.Step,
-            Combo: trigger.Threshold,
-            PreviousCombo: Math.Max(0, trigger.Threshold - 1),
-            Level: index + 1,
-            Threshold: trigger.Threshold,
-            MaxCombo: trigger.Threshold,
-            RangeIndex: 0);
-
-        HandleEvent(evt);
-        ShowStatus($"[测试] 模拟跨过 {trigger.Threshold} 连击", autoHide: true);
-    }
-
-    private int _missTestIndex;
-
-    /// <summary>
-    /// 测试用：轮流模拟"够大额 / 够小额 / 还没到门槛"三种断连击。
-    /// 造出事件后交给 HandleEvent —— 和真实游戏走同一条路，所以门槛对不对连按三下就知道。
-    /// </summary>
-    private void SendTestMiss()
-    {
-        int previous = (_missTestIndex++ % 3) switch
-        {
-            0 => _config.Miss.BigThreshold + 100,                 // 够大额
-            1 => _config.Miss.SmallThreshold + 5,                 // 够小额
-            _ => Math.Max(0, _config.Miss.SmallThreshold - 1)     // 还没到门槛 → 应该毫无反应
-        };
-
-        var evt = new ComboEvent(
-            Kind: ComboEventKind.Break,
-            Combo: 0,
-            PreviousCombo: previous,
-            Level: 0,
-            Threshold: 0,
-            MaxCombo: previous,
-            RangeIndex: -1);
-
-        HandleEvent(evt);
-        ShowStatus($"[测试] 模拟断之前 {previous} 连击", autoHide: true);
-    }
-
-    /// <summary>测试用：按顺序轮流试听每一类情绪（每按一次换一类，方便把语音文件都过一遍）</summary>
-    private void SendTestVoice()
-    {
-        if (_voiceEmotionNames.Count == 0)
-        {
-            ShowStatus("没有可用的语音情绪，检查 config.json 的「语音」", autoHide: false);
-            return;
-        }
-
-        var name = _voiceEmotionNames[_voiceTestIndex % _voiceEmotionNames.Count];
-        _voiceTestIndex++;
-
-        SendJson(new { type = "voice", emotion = name, reason = "测试试听" });
-        ShowStatus($"[测试] 语音情绪 → {name}（再按一次听下一类）", autoHide: true);
-    }
-    private int _rangeTestIndex;
-    private static readonly int[] RangeTestCombos = { 10, 60, 110, 170, 300 };
-
-    /// <summary>
-    /// 测试用：把连击数依次推过几个值，正好落在各个常态区间里。
-    /// 走的是和真实游戏完全同一条路（同一个状态机、同一个 HandleEvent），
-    /// 只是数据是自己造的 —— 所以不开游戏也能验证"区间 → 常态表情"这整条链。
-    /// </summary>
-    private void SendTestRange()
-    {
-        var combo = RangeTestCombos[_rangeTestIndex % RangeTestCombos.Length];
-        _rangeTestIndex++;
-
-        // 这里故意**绕过** OnComboUpdated 那道"只在打歌时喂"的门：
-        // 测试热键的目的就是不开游戏也能验证"区间 → 常态表情"这一整条链。
-        var events = _tracker.Update(combo, combo);
-        foreach (var evt in events) HandleEvent(evt);
-
-        ShowStatus($"[测试] 连击推到 {combo} → {events.Count} 个事件", autoHide: true);
-    }
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -527,33 +559,32 @@ public partial class OverlayWindow : Window
             {
                 case "ready":
                     _pageReady = true;
-                    DebugLog.Write("页面就绪（模型已加载）");
-                    ShowStatus("模型已就绪" + (DebugLog.FilePath.Length > 0 ? $"（调试日志：{DebugLog.FilePath}）" : ""),
-                               autoHide: true);
+                    DebugLog.Write("页面就绪（模型已加载）" +
+                                   (DebugLog.CurrentFile.Length > 0 ? $"；日志：{DebugLog.CurrentFile}" : ""));
                     SendCurrentSteady();     // 页面刚起来，把当前的常态表情补给它
-                    SendCurrentScene();      // 以及"现在在哪个界面"
+                    ApplyScene();            // 页面刚起来，把当前的界面与常态表情补给它
                     StartCursorTracking();
                     break;
 
                 case "log":
                     DebugLog.Write("页面：" + text);
-                    ShowStatus(text ?? "", autoHide: true);
                     break;
 
                 case "error":
                     DebugLog.Write("页面错误：" + text);
-                    ShowStatus("页面错误：" + text, autoHide: false);
                     break;
 
-                // 排查用：页面导出的画面快照（base64 PNG）→ 存成文件。
-                // "看不见角色"这类问题，看一张图比看一串数字快得多。
-                // 只在调试模式下收：玩家机器上不该凭空多出一个每次都写文件的通道。
-                case "snapshot":
-                    if (_config.DebugMode &&
-                        root.TryGetProperty("dataUrl", out var shot) &&
-                        shot.GetString() is { } dataUrl)
-                        SaveSnapshot(dataUrl);
+                // ★ 2026-09-23 新增：页面**画不出东西**了（模型没加载出来、缺 Cubism Core）。
+                //   与 error 的区别是"后果"：error 是某一次没做成，fatal 是这一屏永远是空的。
+                //   悬浮窗**没有地方显示它**（画面上不写任何字，见 ShowStatus 撤掉那一段），
+                //   所以这里只记日志；设置界面的预览区会把它显示在自己那个提示行上。
+                case "fatal":
+                    DebugLog.Write("页面无法渲染：" + text);
                     break;
+
+                // ★ 2026-09-21：`case "snapshot"` 撤掉了 —— 页面不再导出画面快照，
+                //   这一侧也就不需要接（原来这里把 base64 存成 PNG）。
+                //   理由见下面 `Text(double?)` 后面那段说明。
             }
         }
         catch
@@ -575,22 +606,56 @@ public partial class OverlayWindow : Window
     /// </summary>
     private void OnSnapshotReceived(TosuSnapshot snapshot)
     {
-        // gameplay.gameMode == 3 表示"已经进游戏场景"（暂停时它也是 3）——
-        // 这是实测出来的判据：加载期间它是 0，所以能精确地把"还在加载"挡在外面，
-        // 不用像原先设想的那样"等 800 毫秒看状态稳不稳定"。
-        var scene = _sceneTracker.Update(snapshot.MenuState, snapshot.GameMode == 3);
-        if (scene is null) return;                   // 状态没变（含"还在加载"），什么都不用做
+        // "进了游戏没有"看**血条**（加载期间它是 0，歌曲一开始就是满的），
+        // 不看 gameMode —— gameMode 是"哪个游玩模式"，拿它当布尔值用是当初误读了一局 mania
+        // （mania 恰好 =3）。详见 GameStateTracker 文件头。
+        var scene = _sceneTracker.Update(snapshot.MenuState, snapshot.Hp);
+        var loading = _sceneTracker.IsLoading;
+        var mode = GameModes.FromTosu(snapshot.GameMode);
 
-        DebugLog.Write($"界面切换：{scene.Value}（menu.state={Text(snapshot.MenuState)}，" +
-                       $"gameMode={Text(snapshot.GameMode)}）");
+        // ★ 这里**不能**只判断 scene 是否为 null。
+        //   有两件事**都不改变场景**，却都改变"该发什么"：
+        //     · 加载开始/结束 → 角色透明度
+        //     · 游玩模式变了   → 打歌那一档按模式挑站位（决策 50）
+        //   只看 scene 的话这两件事永远等不到刷新（场景始终没变）。所以三个都看。
+        if (scene is null && loading == _loadingSent && mode == _currentMode) return;
 
-        // 进入打歌 = 新的一局开始了 → 连击记忆清零。
-        // 不清的后果很实在：上一局打到 1399 结束，新局从 0 重新数，
-        // "0 < 1399" 会被连击状态机判成断连击 → 开局瞬间做一次假的失误反应。
-        if (scene.Value == GameScene.Playing)
+        var modeChanged = mode != _currentMode;
+        _loadingSent = loading;
+        _currentMode = mode;
+
+        if (scene is not null)
         {
-            _tracker.Reset();
-            DebugLog.Write("新的一局：连击记忆已清零");
+            DebugLog.Write($"界面切换：{scene.Value}（menu.state={Text(snapshot.MenuState)}，" +
+                           $"hp={Text(snapshot.Hp)}，gameMode={Text(snapshot.GameMode)}）");
+
+            // ★ 2026-09-23 修正：连击记忆在**离开**打歌时作废，而不是进入时。
+            //
+            //   原来这里是"进入打歌 → Reset()"。那有个藏得很深的坑：
+            //   进入打歌的那一包数据里 combo 未必是 0 —— 场景刚从加载切过来、
+            //   或者被一包残留数据误判成 Playing 时，同一包的 combo 可能还是上一局的高值。
+            //   记忆刚清成 0 就吃到"1000"，会被当成连击刚刚涨上去 →
+            //   凭空报一次 RangeChanged + Step（角色把打歌时的常态表情与最高阈值表情重放一遍）。
+            //   用户报的"从结算退回选歌会再次触发一次连击状态机"正是这个。
+            //
+            //   改成离开时清：进入打歌时记忆本来就是干净的，第一包报什么都不算"重放"。
+            if (scene.Value != GameScene.Playing)
+            {
+                if (_tracker.LastCombo > 0)
+                    DebugLog.Write($"[连击] 离开打歌（{scene.Value}）→ 记忆作废（上一局到过 {_tracker.LastCombo}）");
+
+                _tracker.Reset();
+            }
+        }
+        else if (modeChanged)
+        {
+            DebugLog.Write("游玩模式变了 → " + (mode?.ToString() ?? "认不出（不按模式挑站位）"));
+        }
+        else
+        {
+            DebugLog.Write(loading
+                ? "谱面加载中：角色临时隐藏（窗口与站位都不动）"
+                : "加载结束：角色恢复显示");
         }
 
         ApplyScene();
@@ -599,33 +664,22 @@ public partial class OverlayWindow : Window
     /// <summary>把可空的 tosu 字段打成能读的日志文字（"缺失" = 这一包里根本没读到）</summary>
     private static string Text(int? value) => value?.ToString() ?? "缺失";
 
-    /// <summary>
-    /// 把页面发来的画面快照（base64 data URL）存成 PNG，放在和日志同一个目录里。
-    /// 只在排查时用 —— 页面每次切界面都会顺手导一张，出问题时打开就能看到"当时画的是什么"。
-    /// </summary>
-    private static void SaveSnapshot(string dataUrl)
-    {
-        try
-        {
-            var comma = dataUrl.IndexOf(',');
-            if (comma < 0) return;
+    /// <summary>血条是浮点（`200` 和 `200.0` 都可能出现），日志里按原样打</summary>
+    private static string Text(double? value) => value?.ToString("0.###") ?? "缺失";
 
-            var bytes = Convert.FromBase64String(dataUrl[(comma + 1)..]);
-            var dir = Path.Combine(Path.GetTempPath(), "osu-live2d-overlay");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, $"snapshot-{DateTime.Now:HHmmss}.png");
-            File.WriteAllBytes(path, bytes);
-            DebugLog.Write("画面快照已保存：" + path);
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Write("画面快照保存失败：" + ex.Message);
-        }
-    }
+    // ★ 2026-09-21：「画面快照」整个撤掉了（这里原来有个 `SaveSnapshot`）。
+    //   它当初是排查"角色看不见"的利器 —— 页面把画布导成 PNG 发回来存盘，
+    //   一张图就能分清"根本没画出来"和"画了但没上屏"。那个问题已经查清并修掉了
+    //   （见 §1022 那一段的结论），留着反而是负担：
+    //     · 一次编码约 270KB，要写日志/磁盘
+    //     · 极易把帧率拖垮（实测：设置界面拖一下滑块就做一次全画布像素扫描 + PNG 编码，
+    //       帧率掉到 5 帧、日志被 base64 撑到 34MB）
+    //   判断"画出来没有"现在靠页面 `renderSelfCheck()` 里**数非透明像素**那一行 ——
+    //   同一件事、不写文件、只回一行字。
 
     /// <summary>
     /// 把"当前界面该长什么样"落到页面和窗口上。
-    /// 两个入口都走这里：场景真的变了（OnSnapshotReceived），以及页面刚就绪要补发（SendCurrentScene）。
+    /// 两个入口都走这里：场景真的变了（OnSnapshotReceived），以及页面刚就绪要补发（OnWebMessage 的 ready 分支）。
     ///
     /// 用的是 Get + IsUsable 这**两个**判断，它们回答的是不同的问题：
     ///   Get(场景) == null   → 这个场景根本没有档位（osu 没开 / 认不出的界面）→ 不显示
@@ -648,9 +702,19 @@ public partial class OverlayWindow : Window
         var profile = _scenes.Get(scene);
         var usable = profile is { IsUsable: true };
 
+        // 角色该多不透明 —— **这一个决定收在 CharacterOpacity 里**，不散在这儿。
+        // 现在只有"看得见 / 看不见"，将来要做"透明度跟着血条走"时只改那个类。
+        var opacity = CharacterOpacity.Resolve(usable, _sceneTracker.IsLoading);
+
+        // 站位要**按当前游玩模式**挑（决策 50）：mania 是竖条列、std 是打击区，
+        // 角色该站哪、多大跟着不一样。没单独设过的模式自动用场景自己那份。
+        var placement = profile?.PlacementFor(_currentMode);
+
         DebugLog.Write($"界面表现：{scene} → " + (usable
-            ? $"显示角色（模型 {profile!.Model}｜穿透 {profile.Window.ClickThrough}）"
-            : "不显示角色") + $"（页面就绪={_pageReady}）");
+            ? $"显示角色（穿透 {profile!.Window.ClickThrough}）"
+            : "不显示角色") +
+            $"，透明度 {opacity:0.##}（加载中={_sceneTracker.IsLoading}，页面就绪={_pageReady}）" +
+            (usable ? $"，模式={_currentMode?.ToString() ?? "认不出"}" : ""));
 
         if (_pageReady)
         {
@@ -659,14 +723,23 @@ public partial class OverlayWindow : Window
                 type = "scene",
                 scene = scene.ToString(),
                 show = usable,
+
+                // opacity 和 show 是两件事：
+                //   show=false    → 这个界面压根不显示角色（没启用 / 认不出）
+                //   opacity=0     → 角色还在、位置也没动，只是暂时看不见（加载期间）
+                // 后者是刻意选的：不动窗口、不卸载模型，歌一开始恢复成 1 就完了。
+                opacity = opacity,
+
                 // 站位只在"要显示"的时候才有意义。不显示时发 null，页面按"维持原样"处理 ——
                 // 免得隐藏期间位置被清成 0，下次显示时角色先闪一下再跳回去。
-                character = usable ? new
+                // （加载期间 show 仍是 true —— 场景还是选歌，站位照发，
+                //   这样它藏在哪儿、待会儿就从哪儿显出来，不会跳。）
+                character = usable && placement is not null ? new
                 {
-                    x = profile!.Character.X,
-                    y = profile.Character.Y,
-                    scale = profile.Character.Scale,
-                    angle = profile.Character.AngleDegrees
+                    x = placement.X,
+                    y = placement.Y,
+                    scale = placement.Scale,
+                    angle = placement.AngleDegrees
                 } : null
             });
         }
@@ -715,12 +788,13 @@ public partial class OverlayWindow : Window
         _defaultSize.Height);
 
     /// <summary>
-    /// 页面就绪时把"当前界面该长什么样"补发一次。
-    /// 理由和常态表情那次一样：程序启动那一刻页面还在加载，消息直接被丢掉 ——
-    /// 不补这一下，页面会一直不知道自己该按哪个界面表现。
+    /// 页面就绪时把"当前的常态表情"补发一次。
+    /// 理由：程序启动那一刻页面还在加载，那会儿发出的消息直接被丢掉 ——
+    /// 不补这一下，角色会一直没有常态表情。
+    ///
+    /// ★ 2026-09-23：原来它上面还有一个 `SendCurrentScene() => ApplyScene()` 的纯转发方法，
+    ///   一并删掉了 —— 调用处直接写 `ApplyScene()` 更少一层跳转。
     /// </summary>
-    private void SendCurrentScene() => ApplyScene();
-
     private void SendCurrentSteady()
     {
         var evt = new ComboEvent(
@@ -737,28 +811,51 @@ public partial class OverlayWindow : Window
 
     // ---------------- 连击事件 → 页面 ----------------
 
+    /// <summary>
+    /// 上一次在**非打歌**场景收到的原始连击（只给日志去重用）。
+    /// 结算/选歌界面里 tosu 会一包一包重复报同一个残留值，不去重就会刷屏。
+    /// </summary>
+    private int _lastOutsideCombo = -1;
+
     private void OnComboUpdated(int combo, int maxCombo)
     {
-        // 门：连击状态机**只在打歌中被喂数据**。
+        // ★ 2026-09-23 重写。原来这里是一道"非打歌就整段 return"的门 ——
+        //   它确实挡住了"结算→选歌时凭空断连击"，但**连"常态表情该跟着区间走"也一起挡住了**：
+        //   角色的常态表情会一直挂在打完那一局的最高档上，退回选歌也不回来。
         //
-        // 为什么非要有这道门：Update 判断"断连击"的唯一依据是 **combo 比上次小**，
-        // 而这个判断只在打歌中成立。打歌之外 tosu 照样报连击 ——
-        // 结算画面停在最终连击值（1399），退出到选歌那一刻变成 0。
-        // 数字确实变小了，但那不是断连击，只是这条数据归零。
-        // 放进状态机就会凭空造出一个 Break → 失误表情/语音在选歌界面乱触发。
+        //   现在改成两道更准的规矩：
+        //     ① 非打歌时**按 combo=0 喂** —— tosu 在这里报的是上一局的残留值
+        //        （实测 2026-09-22 抓包 0299 包：state 已经是 5「选歌」，
+        //         而 gameplay 段里 combo=85 / score=712897 还挂着，下一包才整体归零）。
+        //        那个值对数据本身没错，对界面却没有意义：界面上根本没有"连击"这回事，
+        //        按 0 算才能让角色回到"0 连击那一档"的常态表情。
+        //     ② 断连击与跨阈值**只在打歌里报**（`inGame` 参数）—— 那两件事
+        //        报出来就是"凭空做一次反应"。
         //
-        // 这里能直接读 Current，靠的是 TosuClient 的投递顺序：
-        // 每一包都是**先抛 SnapshotReceived、再抛 ComboUpdated**（见 TosuClient.RunAsync），
-        // 所以轮到连击时，界面状态已经是同一包数据解析出来的最新值，不会慢一拍。
-        if (_sceneTracker.Current != GameScene.Playing) return;
+        //   顺带：这道门原来还得靠"TosuClient 先抛 Snapshot 再抛 Combo"这个顺序
+        //   才能读到同一包的场景。现在仍然依赖它（`_sceneTracker.Current` 是刚更新的），
+        //   但即使慢一拍也不会造假事件了 —— 最坏只是区间晚半秒切。
+        var scene = _sceneTracker.Current;
+        var inGame = scene == GameScene.Playing;
 
-        var events = _tracker.Update(combo, maxCombo);
+        if (!inGame && combo != _lastOutsideCombo)
+        {
+            _lastOutsideCombo = combo;
+            DebugLog.Write($"[连击] 非打歌（{scene}）收到 combo={combo} → 按 0 处理（只更新常态区间）");
+        }
+        else if (inGame)
+        {
+            _lastOutsideCombo = -1;
+        }
+
+        var events = _tracker.Update(inGame ? combo : 0, maxCombo, inGame);
         if (events.Count == 0) return;
 
         if (!_pageReady)
         {
-            // 页面还没就绪就丢消息，并在界面上说清楚（否则会表现成"完全没反应"）
-            ShowStatus("页面未就绪，忽略这次触发", autoHide: true);
+            // 页面还没就绪就丢消息。**记一条日志**：不然表现成"完全没反应"，
+            // 而画面上已经不再提示任何东西了（见 ShowStatus 撤掉那一段）。
+            DebugLog.Write("页面未就绪，忽略这次触发");
             return;
         }
 
@@ -768,7 +865,7 @@ public partial class OverlayWindow : Window
     /// <summary>
     /// 把一个事件交给 TriggerResolver 翻译成"该发什么"，再把动作发给页面。
     /// 正常路径和测试热键都走这里 —— 保证"测的"和"真跑的"是同一条路。
-    /// 这里只负责"怎么发"（SendJson / 日志 / 状态栏），"发什么"由 TriggerResolver 决定。
+    /// 这里只负责"怎么发"（SendJson / 日志），"发什么"由 TriggerResolver 决定。
     /// </summary>
     private void HandleEvent(ComboEvent evt)
     {
@@ -794,7 +891,8 @@ public partial class OverlayWindow : Window
                 });
             }
 
-            // 动作（motion）单独一条消息 —— 页面还没支持，先发着，页面忽略即可
+            // 动作（motion）单独一条消息：页面收到就播一次（`case "motion"`）。
+            // 和表情完全解耦 —— 表情没播出来，动作照样做
             if (!string.IsNullOrWhiteSpace(action.Action))
                 SendJson(new { type = "motion", action = action.Action, reason = action.Note });
 
@@ -804,8 +902,6 @@ public partial class OverlayWindow : Window
 
             DebugLog.Write(action.Note +
                            $" → 表情「{action.Expression}」动作「{action.Action}」语音「{action.Emotion}」");
-
-            Dispatcher.Invoke(() => ShowStatus(action.Note, autoHide: true));
         }
     }
 
@@ -845,6 +941,15 @@ public partial class OverlayWindow : Window
 
     private void OnInteractionDragged(double dx, double dy)
     {
+        // ★ 2026-09-23：接上「位置锁定」。这个字段从 2026-09-20 就存在，
+        //   但一直没有任何代码读它 —— 界面上打开它等于没打开。
+        //   锁住的是**拖动**：窗口位置不许被拖走；调整模式（Ctrl+Alt+T）里的原生拖动
+        //   同理走这里，所以一处就够。
+        if (_settings.Overlay.LockPosition)
+        {
+            DebugLog.Write("位置锁定开着 → 忽略这次拖动");
+            return;
+        }
         // **拖动过程中把窗口留在屏幕里**（不是吸附，是别让它飘出屏幕找不回来）。
         // 不在边界附近时这段完全不起作用，窗口就是老老实实跟手。
         //
@@ -879,7 +984,13 @@ public partial class OverlayWindow : Window
     /// </summary>
     private void SnapToEdge()
     {
-        const double SnapDistance = 16;                  // DIP，全局手感值
+        // ★ 2026-09-23：吸附距离改成**读配置**（原来是写死的 `const double SnapDistance = 16`）。
+        //   配置里那个字段从 2026-09-20 就存在（`悬浮窗.吸附距离`），但一直没人读 ——
+        //   界面上改它等于没改。现在这里接上了，那个字段才算真的"能用"。
+        const double FallbackSnapDistance = 16;          // 配置读不出来时的兜底（= 原来的写死值）
+        var configured = _settings.Overlay.SnapDistance;
+        var snapDistance = configured > 0 ? configured : FallbackSnapDistance;
+
         var area = ActiveArea();
         var maxLeft = Math.Max(area.Left, area.Right - Width);
         var maxTop = Math.Max(area.Top, area.Bottom - Height);
@@ -892,41 +1003,29 @@ public partial class OverlayWindow : Window
 
         if (_scenes.Get(_sceneTracker.Current)?.Window.SnapToEdges != true) return;
 
-        if (Math.Abs(Left - area.Left) < SnapDistance) Left = area.Left;
-        else if (Math.Abs(maxLeft - Left) < SnapDistance) Left = maxLeft;
+        if (Math.Abs(Left - area.Left) < snapDistance) Left = area.Left;
+        else if (Math.Abs(maxLeft - Left) < snapDistance) Left = maxLeft;
 
-        if (Math.Abs(Top - area.Top) < SnapDistance) Top = area.Top;
-        else if (Math.Abs(maxTop - Top) < SnapDistance) Top = maxTop;
+        if (Math.Abs(Top - area.Top) < snapDistance) Top = area.Top;
+        else if (Math.Abs(maxTop - Top) < snapDistance) Top = maxTop;
     }
 
-    // ---------------- 状态提示（会被 WebView2 遮住，所以只在调整模式/出错时看得到） ----------------
-
-    private System.Windows.Threading.DispatcherTimer? _statusTimer;
-
-    /// <summary>
-    /// 状态提示：既写进 WPF 的状态栏（调整模式下可见），也发给页面显示
-    /// —— 因为 WebView2 会盖住 WPF 元素，运行时只有页面里的提示看得见。
-    /// </summary>
-    private void ShowStatus(string text, bool autoHide)
-    {
-        DebugLog.Write("提示：" + text);
-        StatusText.Text = text;
-        StatusBar.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
-
-        if (_pageReady)
-            SendJson(new { type = "status", text, keep = !autoHide });
-
-        _statusTimer?.Stop();
-        if (!autoHide) return;
-
-        _statusTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        _statusTimer.Tick += (_, _) =>
-        {
-            _statusTimer?.Stop();
-            StatusBar.Visibility = Visibility.Collapsed;
-        };
-        _statusTimer.Start();
-    }
+    // ---------------- 状态提示：**已撤掉** ----------------
+    //
+    // ★ 2026-09-23（用户要求："现在有日志了，可以取消掉悬浮窗的弹幕提示了"）
+    //
+    //   原来这里有个 `ShowStatus(text, autoHide)`，把一句话同时送到两处：
+    //     ① WPF 的状态条 —— 其实**基本看不见**（WebView2 是原生窗口，会盖住 WPF 元素，
+    //        只有调整模式把页面藏起来时它才露出来）；
+    //     ② 发给页面，由页面在**底部弹一条半透明的横条** —— 运行时真正看得见的其实是这一条。
+    //   现在两个都不发了，**只留下日志**：所有原来走 ShowStatus 的话都改成
+    //   `DebugLog.Write(...)`，内容一条没丢。
+    //
+    //   为什么撤：① 悬浮窗盖在游戏上，任何文字都是挡视线；
+    //             ② 日志（设置界面「日志」页 + 调试模式的日志文件）信息更全，而且**能回溯**；
+    //             ③ 出了问题该看的地方是「日志」和「配置体检」，不是让角色旁边飘一行字。
+    //   唯一"屏幕上本来什么都没有"的情况（模型没加载出来）由**页面**报 `fatal`，
+    //   设置界面的预览区会把它显示在自己那个提示行上 —— 那是用户正看着的窗口。
 
     // ---------------- 运行模式 / 调整模式 ----------------
 
@@ -1137,37 +1236,6 @@ public partial class OverlayWindow : Window
                         handled = true;
                         break;
 
-                    case HOTKEY_RELOAD:
-                        Web.CoreWebView2?.Reload();
-                        handled = true;
-                        break;
-
-                    // ---- 测试热键：模拟连击/断连击事件 ----
-                    case HOTKEY_TEST_1:
-                        SendTestCombo(0);
-                        handled = true;
-                        break;
-
-                    case HOTKEY_TEST_2:
-                        SendTestCombo(1);
-                        handled = true;
-                        break;
-
-                    case HOTKEY_TEST_3:
-                        SendTestMiss();
-                        handled = true;
-                        break;
-
-                    case HOTKEY_TEST_VOICE:
-                        SendTestVoice();
-                        handled = true;
-                        break;
-
-                    case HOTKEY_TEST_RANGE:
-                        SendTestRange();
-                        handled = true;
-                        break;
-
                     case HOTKEY_QUIT:
                         Close();
                         handled = true;
@@ -1202,21 +1270,93 @@ public partial class OverlayWindow : Window
     // ---------------- 运行期调整落盘（窗口位置/尺寸） ----------------
 
     /// <summary>
-    /// 运行期拖出来的窗口状态，先攒在内存里**不立刻写盘**（定稿 §3.6.2）：
+    /// 待保存的窗口调整。
+    ///
+    /// 运行期拖出来的窗口状态先攒在内存里**不立刻写盘**（定稿 §3.6.2）：
     /// 用户常常只是"临时挪开一下"，自动保存会把配置弄脏；而且拖动是连续动作，
-    /// 每帧写盘既抖磁盘、又可能写坏文件。所以只在**退出程序时问一次**。
+    /// 每帧写盘既抖磁盘、又可能写坏文件。
+    ///
+    /// 现在有**三个**时机问"要不要存"（定稿那一节写的三条，2026-09-20 才凑齐）：
+    ///   ① 关掉悬浮窗时问一次 ② 设置界面的「运行期调整」页主动保存 ③ 退出程序
+    ///
+    /// **用的是全程序共用那一个**（`App.WindowAdjustments`），不是自己 new 一个 ——
+    /// 设置界面那一页要看见同一份，否则它永远显示"没有待保存的调整"。
     ///
     /// "攒"和"写"这两件事都在两个纯逻辑类里（它们不依赖 WPF，所以能在控制台测）：
     ///   PendingWindowAdjustments —— 攒着待保存的调整
-    ///   ConfigFileWriter        —— 把调整写回 config.json
+    ///   ConfigFileWriter        —— 把调整写回当前档案
     /// </summary>
-    private readonly PendingWindowAdjustments _pendingAdjustments = new();
+    private readonly PendingWindowAdjustments _pendingAdjustments = App.WindowAdjustments;
 
     /// <summary>把"当前界面的窗口状态"记进待保存清单（拖动结束、松手之后调）</summary>
     private void RecordWindowChange()
     {
-        _pendingAdjustments.Record(_sceneTracker.Current, Left, Top, Width, Height);
-        DebugLog.Write($"待保存：{_sceneTracker.Current} 的窗口状态 = ({Left:0},{Top:0}) {Width:0}x{Height:0}");
+        var scene = _sceneTracker.Current;
+
+        // 「位置调整后自动保存」（默认关，决策 6：默认询问而不是默认保存）。
+        // ★ 这个设置项一直是死的：存了、界面能改、**没有任何代码读它**（2026-09-20 接上）。
+        //   勾上就当场落盘，不攒、退出时也不再问。
+        //   注意是"松手之后记一次"，不是每帧 —— 拖动过程中每帧写盘既抖磁盘又可能写坏文件。
+        if (_settings.General.AutoSavePlacement)
+        {
+            var one = new Dictionary<GameScene, WindowBounds>
+            {
+                [scene] = new WindowBounds(Left, Top, Width, Height)
+            };
+
+            try
+            {
+                var written = ConfigFileWriter.WriteWindowBounds(_configPath, one);
+                DebugLog.Write($"已自动保存 {scene} 的窗口状态（{written} 个界面）");
+            }
+            catch (Exception ex)
+            {
+                // 自动保存失败不弹窗打断用户 —— 记进日志，界面上还有「运行期调整」页可以手动存
+                DebugLog.Write("自动保存窗口状态失败：" + ex.Message);
+            }
+
+            return;
+        }
+
+        _pendingAdjustments.Record(scene, Left, Top, Width, Height);
+        DebugLog.Write($"待保存：{scene} 的窗口状态 = ({Left:0},{Top:0}) {Width:0}x{Height:0}");
+    }
+
+    /// <summary>
+    /// 把待保存的窗口调整写进**当前档案**。
+    ///
+    /// 悬浮窗关闭时问"要不要保存"走的是这里；设置界面的
+    /// 「运行期调整 → 保存到当前档案」也走这里 —— **一条路，两处入口**。
+    /// （设置页那次其实可以直接调 <c>ConfigFileWriter</c>：待保存层是共用的，
+    ///   `TakeAll` 对两个窗口是同一个动作。这个方法是给关闭时的询问用的。）
+    /// </summary>
+    public int SavePendingWindowChanges()
+    {
+        var written = ConfigFileWriter.WriteWindowBounds(_configPath, _pendingAdjustments.TakeAll());
+        DebugLog.Write($"窗口状态已保存到档案「{_settings.Profile.Current}」（{written} 个界面）");
+        return written;
+    }
+
+    /// <summary>
+    /// 丢掉待保存的窗口调整，并把当前界面的窗口**当场摆回**已保存的位置。
+    ///
+    /// 少了后半句，用户点了「放弃」却看见窗口还待在他刚拖的地方 —— 那看起来就是没生效。
+    /// （不去动别的界面：屏幕上只有一个窗口，"别的界面摆在哪"要等切过去才知道。）
+    /// </summary>
+    public void DiscardPendingWindowChanges()
+    {
+        _pendingAdjustments.TakeAll();
+        ReapplyCurrentWindowPlacement();
+        DebugLog.Write("已放弃待保存的窗口调整");
+    }
+
+    /// <summary>按"配置里已保存的位置"重新摆一次当前界面的窗口</summary>
+    private void ReapplyCurrentWindowPlacement()
+    {
+        var scene = _sceneTracker.Current;
+        var profile = _scenes.Get(scene);
+
+        if (profile is not null) ApplyWindowPlacement(scene, profile);
     }
 
     protected override void OnClosing(CancelEventArgs e)
@@ -1257,9 +1397,7 @@ public partial class OverlayWindow : Window
 
         try
         {
-            var path = Path.Combine(AppContext.BaseDirectory, "config.json");
-            var written = ConfigFileWriter.WriteWindowBounds(path, _pendingAdjustments.TakeAll());
-            DebugLog.Write($"窗口状态已保存到 config.json（{written} 个界面）");
+            SavePendingWindowChanges();
         }
         catch (Exception ex)
         {
@@ -1280,12 +1418,6 @@ public partial class OverlayWindow : Window
         {
             Win32.UnregisterHotkey(_hwnd, HOTKEY_TOGGLE_MODE);
             Win32.UnregisterHotkey(_hwnd, HOTKEY_QUIT);
-            Win32.UnregisterHotkey(_hwnd, HOTKEY_RELOAD);
-            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_1);
-            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_2);
-            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_3);
-            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_RANGE);
-            Win32.UnregisterHotkey(_hwnd, HOTKEY_TEST_VOICE);
         }
 
         base.OnClosed(e);

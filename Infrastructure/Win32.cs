@@ -33,14 +33,15 @@ internal static class Win32
     // ---- 热键的修饰键 / 虚拟键码 ----
     internal const uint MOD_ALT = 0x0001;
     internal const uint MOD_CONTROL = 0x0002;
-    internal const uint VK_T = 0x54;
+
+    /// <summary>
+    /// Q —— 「结束悬浮窗」默认热键 `Ctrl+Alt+Q` 里那个 Q。
+    ///
+    /// 只留了这一个：字母的虚拟键码就是它大写的 ASCII 码，别处要用字母直接写 `'E'` 即可。
+    /// （原来还列着 T / R / V / 1~4 —— 那些是旧写死热键与开发期测试热键留下的，
+    ///   ★ 2026-09-23 随测试热键一起删掉了。）
+    /// </summary>
     internal const uint VK_Q = 0x51;
-    internal const uint VK_R = 0x52;
-    internal const uint VK_V = 0x56;
-    internal const uint VK_1 = 0x31;
-    internal const uint VK_2 = 0x32;
-    internal const uint VK_3 = 0x33;
-    internal const uint VK_4 = 0x34;
 
     /// <summary>
     /// 屏幕上的一个点。**它是物理像素，和 WPF 的 Point（DIP）不是一回事** ——

@@ -1,0 +1,142 @@
+<!-- ============================================================
+     MainWindow.xaml —— 配置界面（壳）
+     ============================================================
+     【它是主窗口】（定稿决策 26）
+       启动软件 → 先看到它；点「启动悬浮窗」才拉起悬浮窗，同时自己最小化。
+       直接关掉它 = 退出整个软件（App.xaml 的 ShutdownMode）。
+
+     
+     【布局：四栏骨架】（定稿 §8.6）
+       ┌──────────┬────────────┬──────────────┬────────────┐
+       │ 左导航   │ 标识列表   │ 配置区       │ 预览区     │
+       └──────────┴────────────┴──────────────┴────────────┘
+       本文件只搭"左导航 + 配置区"外层。**标识列表与预览区由各页面自己决定出不出现**
+       （形象 / 行为 / 联动与窗口 要；数据与档案 / 应用 不要）—— 它们不属于壳。
+
+     
+     ============================================================ -->
+<Window x:Class="OsuLive2dOverlay.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="osu-live2d-overlay — 配置"
+        Icon="/Resources/olo-small.png"
+        Height="720" Width="1180"
+        MinHeight="640" MinWidth="1000"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        Loaded="OnWindowLoaded"
+        Background="{DynamicResource Brush.Window}"
+        FontFamily="{DynamicResource FontFamily.UI}"
+        FontSize="{DynamicResource FontSize.Body}"
+        Foreground="{DynamicResource Brush.TextPrimary}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ============================================================
+             顶部状态条（定稿 §1.3：每一页都有的东西）
+             文案一律用「悬浮窗」而不是「服务」——
+             用户自己问过"服务是什么意思"，所以界面上不用这个词。
+             ============================================================ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}"
+                BorderThickness="0,0,0,1"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="StatusDot" Width="9" Height="9"
+                             VerticalAlignment="Center"
+                             Fill="{DynamicResource Brush.TextDisabled}" />
+                    <TextBlock x:Name="StatusText" Text="悬浮窗未启动"
+                               Margin="8,0,0,0" VerticalAlignment="Center"
+                               Style="{DynamicResource Text.Body}" />
+                </StackPanel>
+
+                <!-- 中：当前档案名 + 未保存标记 -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock x:Name="ProfileText"
+                               VerticalAlignment="Center"
+                               Style="{DynamicResource Text.Caption}" />
+                    <TextBlock x:Name="DirtyText"
+                               Text="● 未保存"
+                               Visibility="Collapsed"
+                               Margin="12,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource Brush.Warning}"
+                               FontWeight="SemiBold"
+                               Style="{DynamicResource Text.Caption}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="OverlayButton" Content="启动悬浮窗"
+                            Padding="14,6" Click="OnToggleOverlayClick" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ============================================================
+             主体：左导航 + 内容区
+             ============================================================ -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="180" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Background="{DynamicResource Brush.Sidebar}"
+                    BorderBrush="{DynamicResource Brush.Border}"
+                    BorderThickness="0,0,1,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="osu-live2d-overlay"
+                               Margin="16,18,16,12"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource Brush.Primary}"
+                               TextWrapping="Wrap" />
+
+                    <!-- 六个一级板块（口诀：首页 → 形象 → 行为 → 联动与窗口 → 我的数据 → 软件本身） -->
+                    <ListBox x:Name="NavList"
+                             Grid.Row="1"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ItemContainerStyle="{DynamicResource NavItem}"
+                             SelectionChanged="OnNavSelectionChanged">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <!-- 图标用系统自带的 Segoe MDL2 Assets 字体（HC 3.5.1 没有 PackIcon) -->
+                                    <TextBlock Text="{Binding Icon}" Style="{DynamicResource Icon.Nav}" />
+                                    <TextBlock Text="{Binding Title}"
+                                               Margin="10,0,0,0"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <ContentControl x:Name="PageHost" Grid.Column="1" />
+        </Grid>
+
+    </Grid>
+</Window>

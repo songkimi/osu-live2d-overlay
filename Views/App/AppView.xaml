@@ -1,0 +1,29 @@
+<!-- ============================================================
+     AppView.xaml —— 「应用」板块的容器（**页内 Tab**）
+
+     【为什么加这一层】（和「数据与档案」同一个理由，见那个文件的说明）
+       导航分三级：一级 = 左导航，二级 = 页内 Tab，三级 = 卡片。
+       "应用"底下有 通用 / 更新 / 帮助 / 关于 四页，全塞进左导航会让导航长得没法看。
+       这一层自己**不含状态**：只把各页造出来塞进 Tab。
+
+     【现在接了几页】
+       通用（原有）、关于（2026-09-23）。更新 / 帮助还没做 ——
+       它们会在做出来之后加进来；**不留空白 Tab**（空白页会让用户以为点坏了）。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.AppView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}">
+
+    <TabControl x:Name="Tabs"
+                Background="Transparent"
+                BorderThickness="0"
+                Padding="0"
+                Margin="0">
+        <TabItem x:Name="GeneralTab" Header="通用" />
+        <TabItem x:Name="UpdateTab" Header="更新" />
+        <TabItem x:Name="AboutTab" Header="关于" />
+    </TabControl>
+</UserControl>

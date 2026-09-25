@@ -1,0 +1,266 @@
+<!-- ============================================================
+     GeneralView.xaml —— 「应用 → 通用」页（**第一页**）
+     ============================================================
+     【为什么第一页是它】（定稿 §6 的"最小竖切"）
+       字段少、零外部依赖，却能把整条链路跑通：
+         绑定 → 改动标脏「● 未保存」→ 保存落盘 → 放弃 → 恢复默认
+       这条链路后面每一页都要用，第一页把它跑稳，后面就只是"换字段"。
+
+     【页面骨架照 §8.2 的统一模板】
+       顶部：页面标题 + 一行说明
+       分组卡片：一组设置 = 一张卡，卡片标题下一行灰字说明
+       设置行：标题 + 控件 + 一行说明（ + 生效方式标记）
+       底部：有"未保存"概念时出现 [恢复默认] [放弃] [保存]
+
+     【每个控件都挂了 SettingIndex.Path】
+       写法与体检的 FieldPath 完全一致（`通用.外观`）——
+       这样以后"体检报告点一条 → 跳到这个控件"才有地方可跳（决策 29）。
+       **新页面照抄这个做法。**
+
+     【四项标注了"功能还没接上"】
+       语言 / 开机自启 / 托盘图标 / 关闭时最小化到托盘 —— 这四项现在**只存配置**
+       （没有任何运行期代码读它们：多语言资源、写注册表、托盘图标、关窗行为都还没做）。
+       ★ 必须**在界面上写清楚**，否则用户会以为"点了没用 = 有 bug"（定稿 §1.2 的老规矩）。
+
+       位置调整后自动保存**曾经**也在这一组里，2026-09-20 真接上了（悬浮窗读它），
+       于是它搬进自己那张卡 —— 生效的和没生效的混在一张卡片里，那句提示就写不准。
+       > 这已经是**第三次**遇到"字段有、界面有、没人读"了（前两次：`目录.角色分布`、
+       > `位置调整后自动保存`）。加字段时就该指出"谁读它"，见定稿决策 48。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.GeneralView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:svc="clr-namespace:OsuLive2dOverlay"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}"
+             Loaded="OnLoaded">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ============================================================
+             内容区
+             ============================================================ -->
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+            <StackPanel Margin="20">
+
+                <TextBlock Text="通用" Style="{DynamicResource Text.PageTitle}" />
+                <TextBlock Text="外观、文字，以及软件自身的行为。"
+                           Style="{DynamicResource Text.Caption}" Margin="0,6,0,20" />
+
+                <!-- ============================================================
+                     卡片一：外观与文字（这三项**即时生效**）
+                     ============================================================ -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="外观与文字" Style="{DynamicResource Text.CardTitle}" />
+                        <TextBlock Text=""
+                                   Style="{DynamicResource Text.Caption}" Margin="0,4,0,18" />
+
+                        <!-- 外观 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="外观" Style="{DynamicResource Text.Body}" />
+                            <ComboBox svc:SettingIndex.Path="通用.外观"
+                                      Width="200" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding AppearanceOptions}"
+                                      SelectedItem="{Binding Appearance}" />
+                            <TextBlock Text=""
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <!-- 字体 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="字体" Style="{DynamicResource Text.Body}" />
+                            <ComboBox svc:SettingIndex.Path="通用.字体"
+                                      Width="280" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding FontOptions}"
+                                      SelectedItem="{Binding Font}"
+                                      VirtualizingStackPanel.IsVirtualizing="True"
+                                      VirtualizingStackPanel.VirtualizationMode="Recycling" />
+                            <TextBlock Text=""
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <!-- 字号 -->
+                        <StackPanel>
+                            <TextBlock Text="字号" Style="{DynamicResource Text.Body}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <Slider svc:SettingIndex.Path="通用.字号"
+                                        Width="240" VerticalAlignment="Center"
+                                        Minimum="{Binding MinFontSizePoints}" Maximum="{Binding MaxFontSizePoints}"
+                                        TickFrequency="0.5" IsSnapToTickEnabled="True"
+                                        Value="{Binding FontSizePoints}" />
+                                <TextBlock Text="{Binding FontSizePoints, StringFormat={}{0:0.#} pt}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                           Style="{DynamicResource Text.Body}" />
+                            </StackPanel>
+                            <TextBlock Text=""
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     卡片一点五：悬浮窗位置 —— **这一项是真生效的**
+                     2026-09-20 之前它混在下面那张"还没接上"的卡片里，
+                     现在真接上了（悬浮窗读它），所以搬出来单独一张 ——
+                     把生效的和没生效的混在一张卡片里，那句提示就没法写准。
+                     ============================================================ -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="悬浮窗位置" Style="{DynamicResource Text.CardTitle}" />
+
+                        <StackPanel Style="{DynamicResource SettingRow}" Margin="0,4,0,0">
+                            <TextBlock Text="位置调整后自动保存" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="通用.位置调整后自动保存"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding AutoSavePlacement}" Margin="0,6,0,0" />
+                            
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     卡片二：启动与托盘（**四项功能还没接上**，所以明说）
+                     ============================================================ -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="启动与托盘" Style="{DynamicResource Text.CardTitle}" />
+                        
+
+                        <!-- 语言 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="语言" Style="{DynamicResource Text.Body}" />
+                            <ComboBox svc:SettingIndex.Path="通用.语言"
+                                      Width="200" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding LanguageOptions}"
+                                      SelectedItem="{Binding Language}" />
+                            
+                        </StackPanel>
+
+                        <!-- 开机自启 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="开机自启动" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="通用.开机自启"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding AutoStart}" Margin="0,6,0,0" />
+                            <TextBlock Text="下次开机生效"
+                                       Style="{DynamicResource Text.Label}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <!-- 托盘图标 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="显示托盘图标" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="通用.托盘图标"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding TrayIcon}" Margin="0,6,0,0" />
+                            <!-- ★ 2026-09-24 加这一句，因为它是**实测踩出来的**：
+                                 Win11 会把新注册的托盘图标放进任务栏的「隐藏的图标」面板里，
+                                 用户会以为"图标没出现"，而那时缩到托盘就会找不到入口。 -->
+                            <TextBlock Text="图标可能收在任务栏的 ^ 里"
+                                       Style="{DynamicResource Text.Label}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <!-- 关闭时最小化到托盘 -->
+                        <!-- ★ 2026-09-24：托盘图标关着时这一项**置灰**。
+                             理由是硬的：托盘都没有，点 X 缩到托盘就等于把窗口藏进一个
+                             没有入口的地方（任务栏没有、托盘也没有），只能去任务管理器。
+                             置灰比"让它点了没反应"清楚得多。 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="关闭时最小化到托盘" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="通用.关闭时最小化到托盘"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding MinimizeToTrayOnClose}"
+                                          IsEnabled="{Binding TrayIcon}" Margin="0,6,0,0" />
+                            <TextBlock Text="需要先打开上面的托盘图标"
+                                       Style="{DynamicResource Text.Label}" Margin="0,5,0,0"
+                                       Visibility="{Binding IsTrayIconOff, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ============================================================
+             底部保存栏
+             ============================================================ -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}"
+                BorderThickness="0,1,0,0"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <!-- 未保存提醒：有改动时变警告色 + 加粗（2026-09-20 用户反馈"不够明显"） -->
+                    <TextBlock Text="{Binding SaveStateText}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource Text.Caption}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasUnsavedChanges}" Value="True">
+                                        <Setter Property="Foreground" Value="{DynamicResource Brush.Warning}" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <!-- 配置文件在哪：用户找不到文件，是因为界面从来没告诉过他 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBlock Text="{Binding ConfigFilePath}"
+                                   Style="{DynamicResource Text.Label}"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxWidth="520"
+                                   ToolTip="{Binding ConfigFilePath}" />
+                        <Button Content="打开文件夹" Padding="8,2" Margin="8,0,0,0"
+                                Command="{Binding OpenConfigFolderCommand}" />
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- 三个按钮的灰/亮由命令的 CanExecute 管，这里**不再**绑 IsEnabled（两处都写早晚不一致） -->
+                    <Button Content="恢复默认" Padding="14,6"
+                            Command="{Binding ResetToDefaultCommand}" />
+                    <Button Content="放弃" Padding="14,6" Margin="8,0,0,0"
+                            Command="{Binding DiscardCommand}" />
+                    <Button Content="保存" Padding="18,6" Margin="8,0,0,0"
+                            Command="{Binding SaveCommand}"
+                            Background="{DynamicResource Brush.Primary}"
+                            Foreground="{DynamicResource Brush.TextOnPrimary}"
+                            BorderBrush="{DynamicResource Brush.Primary}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ============================================================
+             Toast（右下角，3 秒自动消失；错误类不自动消失，要手动点掉）
+             ============================================================ -->
+        <Border x:Name="ToastPanel"
+                Grid.Row="0" Grid.RowSpan="2"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,68"
+                Background="{DynamicResource Brush.TextPrimary}"
+                CornerRadius="6" Padding="16,10"
+                MouseLeftButtonUp="OnToastClick">
+            <TextBlock x:Name="ToastText"
+                       Foreground="{DynamicResource Brush.Surface}"
+                       Style="{DynamicResource Text.Body}" />
+        </Border>
+    </Grid>
+</UserControl>

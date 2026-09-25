@@ -61,19 +61,6 @@ public enum HealthLevel
 public sealed record HealthIssue(HealthLevel Level, string Message, string FieldPath);
 
 /// <summary>
-/// 区间这类"能兜住"的检查，严不严格由用户定（定稿 §六：这个选项归"配置体检"页）。
-/// 它只影响第 7~10 条 —— 超出这个范围调它没有任何效果，别指望它"一键让所有问题变错"。
-/// </summary>
-public enum RangeCheckMode
-{
-    /// <summary>宽松：兜住了就只提醒（Warning，可以点忽略放行）</summary>
-    Lenient,
-
-    /// <summary>严格：不给含糊（升级成 Error，必须改）</summary>
-    Strict
-}
-
-/// <summary>
 /// 体检要知道的"外部世界"。做成参数而不是自己去摸文件系统 —— 纯逻辑类才能用控制台测。
 /// </summary>
 /// <param name="ModelDirectoryExists">模型目录在不在</param>
@@ -82,14 +69,30 @@ public enum RangeCheckMode
 /// <param name="KnownExpressionIds">模型里有哪些表情标识（来自 ModelScanner）</param>
 /// <param name="KnownMotionIds">模型里有哪些动作标识</param>
 /// <param name="VoiceEmotionFileCounts">每个情绪文件夹里有几个可用音频；没有这个情绪就是 0（或干脆没有这个键）</param>
+/// <param name="TosuExeExists">「tosu 程序」那个文件在不在（**只在要查数据源时才探测**）</param>
+/// <param name="OsuExeExists">「osu 程序」那个文件在不在（同上）</param>
 public sealed record HealthEnvironment(
     bool ModelDirectoryExists,
     bool ModelEntryExists,
     bool VoiceDirectoryExists,
     IReadOnlySet<string> KnownExpressionIds,
     IReadOnlySet<string> KnownMotionIds,
-    IReadOnlyDictionary<string, int> VoiceEmotionFileCounts);
+    IReadOnlyDictionary<string, int> VoiceEmotionFileCounts,
+    // ★ 2026-09-23 新增（第 21 条要用）。**带默认值**是有意的：
+    //   这份 record 的构造点散在练习与验证工程里，多一个必填参数会一次打破好几处，
+    //   而"没探测过"与"不存在"在这里的处理是一样的（不传 dataSource 就不查那一条）。
+    bool TosuExeExists = false,
+    bool OsuExeExists = false);
 
+/// <summary>
+/// 区间这类"能兜住"的检查，严不严格由用户定（定稿 §3.4：这个选项归"配置体检"页）。
+/// 它只影响第 7~10 条 —— 超出这个范围调它没有任何效果，别指望它"一键让所有问题变错"。
+///
+/// **2026-09-20 挪走了**：它现在是配置数据的一部分（`体检.检查模式`），
+/// 定义已移到 `Config/PluginConfig.cs`（同命名空间，这里照旧能用）。
+/// 挪动的理由：否则 PluginConfig 会反向依赖本文件，连带所有"只需要配置类"的验证工程
+/// 都得把体检一起链接进来。
+/// </summary>
 public static class ConfigHealthCheck
 {
     /// <summary>两个连击阈值差多少就算"太接近"（两档几乎同时触发，看起来像卡了一下）</summary>
@@ -103,8 +106,20 @@ public static class ConfigHealthCheck
     ///
     /// 一次把话说完：不是遇到第一个问题就返回 —— 用户改配置要一轮改完，不是改一条跑一次。
     /// </summary>
+    /// <param name="config">**配置档案**（模型 / 规则 / 语音 / 界面感知）</param>
+    /// <param name="env">"外部世界"（见 <see cref="HealthEnvironment"/>）</param>
+    /// <param name="mode">区间与标识那几条的严格程度</param>
+    /// <param name="dataSource">
+    /// **软件设置**里的「数据源」那一段（★ 2026-09-23 加的参数，第 21 条要用）。
+    ///
+    /// 传 null = 不查数据源那一条 —— 这是**故意留的口子**：
+    /// 数据源不在档案里（它跟着 settings.json 走，不随角色切换），
+    /// 而这份 record 的调用点散在练习与验证工程里，加一个必填参数会一次打破好几处。
+    /// 带默认值之后，老调用点一个字都不用改，而"要不要连数据源一起查"由调用方说了算。
+    /// </param>
     public static IReadOnlyList<HealthIssue> Check(
-        PluginConfig config, HealthEnvironment env, RangeCheckMode mode = RangeCheckMode.Lenient)
+        PluginConfig config, HealthEnvironment env, RangeCheckMode mode = RangeCheckMode.Lenient,
+        DataSourceConfig? dataSource = null)
     {
         var issues = new List<HealthIssue>();
 
@@ -119,6 +134,8 @@ public static class ConfigHealthCheck
         CheckThresholds(config, issues);
         CheckScenes(config, issues);
         CheckPerformance(config, issues);
+
+        if (dataSource is not null) CheckDataSource(dataSource, env, issues);
 
         return issues;
     }
@@ -356,20 +373,72 @@ public static class ConfigHealthCheck
 
         if (profiles.All(p => !p.Profile.IsUsable))
             issues.Add(new(HealthLevel.Warning,
-                           "四个界面都没启用（或者都没选模型），角色永远不会显示",
+                           "四个界面都没启用，角色永远不会显示",
                            "界面感知"));
 
-        foreach (var (name, profile) in profiles)
-            if (profile.Enabled && string.IsNullOrWhiteSpace(profile.Model))
-                issues.Add(new(HealthLevel.Warning,
-                               $"「{name}」界面启用了，但没选模型 —— 这一档不显示角色",
-                               $"界面感知.{name}.模型"));
+        // 2026-09-20 删掉了一条规则：「某界面启用了但没选模型」。
+        // 它检查的 `界面感知.{界面}.模型` 已经不存在了 —— 悬浮窗显示的**始终是**
+        // 全局 `模型{}` 那一个，"每界面一个模型"从来没有实现过。
+        // 那条规则唯一的作用是给手改过的配置发一个**假警报**：
+        // 启用=真、模型=空 → 报"这一档不显示角色"，而角色其实好好地在那儿。
+        // "有没有模型"是全局的事，上面 `模型.目录` / `模型.入口` 两条已经在管。
 
         // 打歌时必须穿透：不然悬浮窗会把鼠标从 osu 手里抢走，直接打不了
         if (scenes.Playing.Enabled && !scenes.Playing.Window.ClickThrough)
             issues.Add(new(HealthLevel.Warning,
                            "打歌界面没有开启点击穿透，会抢走 osu 的鼠标、影响打歌",
                            "界面感知.打歌.悬浮窗.点击穿透"));
+    }
+
+    // ---------------- 数据源：自动启动的开关开着、但目标不可用（第 21 条）----------------
+
+    /// <summary>
+    /// 自动启动那四个开关里的前两个。
+    ///
+    /// 【为什么只查"开着"的那两个】
+    ///   开关关着时路径为空**是正常的** —— 用户没打算用这个功能，
+    ///   报一句"没配路径"就是**假警报**（这个项目的体检最怕假警报：
+    ///   整屏橙色会让人以为程序坏了，然后去改一个本来就对的东西）。
+    ///
+    /// 【为什么"空"和"文件不存在"要分开说】
+    ///   它们是两种不同的修法：一个要去选文件，一个要去看文件是不是被挪走了。
+    ///   合并成一句"路径不对"会让用户先去翻设置、再发现是文件没了。
+    ///
+    /// 【为什么"退出时关闭"不看】
+    ///   那两个开关不依赖路径：它们关的是**我们自己启动起来的那个进程**，
+    ///   而"启动过没有"是运行期的事，配置文件里没有任何东西可以据此判断。
+    ///   对它报任何东西都只能是猜 
+    /// </summary>
+    private static void CheckDataSource(
+        DataSourceConfig dataSource, HealthEnvironment env, List<HealthIssue> issues)
+    {
+        if (dataSource.AutoStartTosu)
+            CheckAutoStartTarget("tosu", "数据源.tosu路径",
+                                 dataSource.TosuPath, env.TosuExeExists, issues);
+
+        if (dataSource.AutoStartOsu)
+            CheckAutoStartTarget("osu", "数据源.osu路径",
+                                 dataSource.OsuPath, env.OsuExeExists, issues);
+    }
+
+    /// <param name="fieldPath">指**路径**那一项，不是指开关 —— 用户接下来要去改的是那个框</param>
+    private static void CheckAutoStartTarget(
+        string what, string fieldPath, string? path, bool exists, List<HealthIssue> issues)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            issues.Add(new(HealthLevel.Warning,
+                           $"开了「启动悬浮窗时自动启动 {what}」，但 {what} 程序路径还空着 —— 这个开关不会生效",
+                           fieldPath));
+            return;
+        }
+
+        if (!exists)
+        {
+            issues.Add(new(HealthLevel.Warning,
+                           $"开了「启动悬浮窗时自动启动 {what}」，但文件不存在：{path}",
+                           fieldPath));
+        }
     }
 
     // ---------------- 表现：策略和数值对不上 ----------------

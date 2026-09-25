@@ -6,13 +6,65 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+
+    <!-- ★ 2026-09-24：托盘改用 .NET 官方的 `System.Windows.Forms.NotifyIcon`。
+         为什么要拉进 WinForms：HandyControl 那个 `NotifyIcon` 是个黑盒 ——
+         探针证明它**注册成功**（内部 `_added = true`）、图标句柄也**有效**
+         （导出来是 24×24、452 个非透明像素），可系统里就是不出现，
+         而且没有任何可查的状态能说明为什么。
+         而"托盘图标看不见"对一个托盘程序是致命的（窗口一缩进去就没有入口了），
+         所以换成官方实现：行为确定、社区验证了二十年、出问题也有迹可循。
+         代价只有一个：开这个开关（WPF + WinForms 共存是官方支持的组合）。 -->
+    <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>osu-live2d-overlay</AssemblyName>
     <RootNamespace>OsuLive2dOverlay</RootNamespace>
+
+    <!-- 版本号：**从 0.x 起步**（1.0 才代表"承诺向后兼容"；在那之前
+         配置文件格式与界面都可能变）。「应用 → 关于」页显示的就是它 ——
+         从程序集读，不写死在界面里，免得界面写的版本和打包出来的对不上。 -->
+    <Version>0.7.0</Version>
+
+    <!-- 程序图标（.exe 自己那个）：Windows 只认 .ico，png 不行 ——
+         所以从 olo.png 生成了 Resources\olo.ico -->
+    <ApplicationIcon>Resources\olo.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- ★ 2026-09-24 必须的两行：`UseWindowsForms` 会把 `System.Windows.Forms`
+         与 `System.Drawing` 塞进**全局隐式 using** —— 于是 `UserControl`、`Point`、
+         `Application`、`MouseEventArgs`、`KeyEventArgs` 这些名字在**每一个文件**里
+         都变成"两个命名空间都有"的歧义，一次报错二十几个文件。
+         摘掉它们：程序集照样引用得到（托盘要用），但名字不再自动可见 ——
+         需要的地方自己写 `using WinForms = System.Windows.Forms;`。
+         这也正是"WPF + WinForms 混用"唯一需要额外小心的那一步。 -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 桌面图标（用户 2026-09-23 做好给的）。**必须显式写成 Resource** ——
+         SDK 只自动收 .cs/.xaml，图片不收；不写这一行 `Icon="/Resources/olo.png"` 会静默失效。 -->
+    <Resource Include="Resources\olo.png" />
+    <!-- 界面里显示用的那张（128×128）：原图 1MB+1254px，塞进 48px 的框里是浪费 -->
+    <Resource Include="Resources\olo-small.png" />
+
+    <!-- 托盘图标：WinForms 的 `NotifyIcon` 只认 `System.Drawing.Icon`，
+         所以**必须是 .ico**（png 得先转一层，而转出来的东西又难查）。
+         同一个文件已经作为 ApplicationIcon 编进 exe —— 那一行只管"exe 自己的图标"，
+         与"托盘上显示哪个图标"是两件事。 -->
+    <Resource Include="Resources\olo.ico" />
+
     <!-- WebView2：在 WPF 里承载 Live2D 渲染页面 -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
+
+    <!-- HandyControl：设置界面的控件库（Card / ToggleSwitch / PackIcon 等）。
+         本机 NuGet 缓存里已有 3.5.1，离线可还原。
+         它没有 net10 目标，靠 net6.0-windows 的兼容性引用 —— 已在编译里验证过。 -->
+    <PackageReference Include="HandyControl" Version="3.5.1" />
+
+    <!-- CommunityToolkit.Mvvm：ViewModel 的样板（[ObservableProperty] / [RelayCommand]）。
+         页面多、属性多，手写 INotifyPropertyChanged 不划算。 -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,14 +75,33 @@
     </None>
   </ItemGroup>
 
-  <!-- config.json 只在输出目录**还没有**的时候复制一份当模板。
-       不能像 web\ 那样用 PreserveNewest：输出目录那份是**运行期状态**
-       （界面感知、拖出来的窗口位置、各界面角度都写在里面，根模板里根本没有这些），
-       而根模板是给人看的文档式模板。用 PreserveNewest 的话，只要改一下根模板，
-       下一次构建就会把运行配置整个覆盖掉 —— 配置直接丢。
-       想拿一份新模板：删掉输出目录的 config.json 再构建。 -->
-  <Target Name="CopyConfigTemplate" AfterTargets="Build" Condition="!Exists('$(OutDir)config.json')">
-    <Copy SourceFiles="config.json" DestinationFolder="$(OutDir)" />
+  <!-- 两个配置文件模板都只在输出目录**还没有**的时候复制一份。
+       不能像 web\ 那样用 PreserveNewest：输出目录那两份装的是**运行期状态**
+       （界面感知、拖出来的窗口位置、各界面角度、用户调的字体字号都写在里面，
+        根模板里根本没有这些），而根模板是给人看的文档式模板。
+       用 PreserveNewest 的话，只要改一下根模板，下一次构建就会把运行配置整个覆盖掉 —— 配置直接丢。
+       想拿一份新模板：删掉输出目录那份再构建。
+
+       ★ 2026-09-20 起是**两个**文件、但配置那份换了地方：
+         profiles\默认.json = 配置档案（按角色切换，一个档案一个文件）
+         settings.json      = 软件设置（全局唯一，换角色不变）
+
+       ★ 档案模板要**改名**放进 profiles\ —— 所以必须用 DestinationFiles，
+         不能用 DestinationFolder：后者会沿用原文件名，于是你会得到
+         `profiles\config.json`（一个叫"config"的档案，而且程序一个都不认识）。
+         这个坑当场出现过一次，别再用 DestinationFolder 抄这段。
+
+       ★ 条件里多加一条 `!Exists('$(OutDir)config.json')`：
+         输出目录里有老版本那份 config.json 时**先别放模板** ——
+         否则首次启动会看到"档案已经存在"，于是跳过采纳，
+         把用户自己调过的配置丢在 config.json.old 里，界面却从模板开始。
+
+       settings.json 没有改名问题，照旧用 DestinationFolder。 -->
+  <Target Name="CopyConfigTemplates" AfterTargets="Build">
+    <Copy SourceFiles="config.json" DestinationFiles="$(OutDir)profiles\默认.json"
+          Condition="!Exists('$(OutDir)profiles\默认.json') AND !Exists('$(OutDir)config.json')" />
+    <Copy SourceFiles="settings.json" DestinationFolder="$(OutDir)"
+          Condition="!Exists('$(OutDir)settings.json')" />
   </Target>
 
 </Project>

@@ -1,0 +1,290 @@
+<!-- ============================================================
+     FileLocationView.xaml —— 「数据与档案 → 程序与数据源」页
+     ============================================================
+     【两块，竖排】
+       ① 程序与日志：osu / tosu 程序、日志目录，以及两个固定的配置文件位置
+       ② 数据源：监听地址 / 监听端口 + [测试连接] / 测试结果 / 启动等待秒数
+
+     为什么合成一页见 ViewModel 的文件头（名字要对得上内容）。
+
+     【这一页要极简】（2026-09-20 用户反馈）
+       > "不用写那么多小文字作为提示，让人感觉就像作者也不知道这个设置是干嘛的所以用小字。"
+     所以：**页面顶部只留一行说明**（决策 47），下面全是"名字 + 值 + 动作"。
+     靠两件事让人看懂：
+       · 名字用常规叫法（"osu 程序" / "监听端口" / "测试连接"）
+       · **框里显示实际值**（默认值也算进去了）——
+         用户一眼看到东西在哪、在连哪，就不需要有人解释"留空是什么意思"
+
+     【路径框只读】
+       定稿 §8.3：文件/目录一律"只读框 + [浏览] + [打开]"。
+       手打路径太容易错（少个斜杠、全角字符），而这类错**不报错、只是找不到**。
+
+     【两类行】
+       · 可编辑（osu 程序 / tosu 程序 / 日志）：浏览、清除、打开
+       · 固定（配置文件 / 软件设置文件）：只有"打开所在文件夹" —— 它们就在 exe 旁边
+
+     【测试结果那个灯有五个档】
+       idle / testing = 灰（**没测过就别说好或坏**），ok = 绿，warn = 黄，error = 红。
+       黄那一档是这个功能的重点：**连上了但没收到数据**（osu 没在跑）是常态，
+       把它画成红的会让用户以为配置错了，然后去改一个本来是对的东西。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.FileLocationView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:svc="clr-namespace:OsuLive2dOverlay"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}"
+             Loaded="OnLoaded">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+            <StackPanel Margin="20">
+
+                <TextBlock Text="程序与数据源" Style="{DynamicResource Text.PageTitle}" />
+                <TextBlock Text="路径框只读，改路径请点「浏览」。"
+                           Style="{DynamicResource Text.Caption}" Margin="0,6,0,16" />
+
+                <!-- ============================================================
+                     一、程序与日志
+                     ============================================================ -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <ItemsControl ItemsSource="{Binding Entries}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding Title}"
+                                               VerticalAlignment="Center"
+                                               Style="{DynamicResource Text.Body}" />
+
+                                    <TextBox Grid.Column="1"
+                                             svc:SettingIndex.Path="{Binding FieldPath}"
+                                             Text="{Binding EffectivePath, Mode=OneWay}"
+                                             IsReadOnly="True"
+                                             VerticalContentAlignment="Center"
+                                             Margin="0,0,8,0"
+                                             ToolTip="{Binding EffectivePath}" />
+
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                        <Button Content="浏览" Padding="10,5"
+                                                Visibility="{Binding CanEdit, Converter={StaticResource BoolToVis}}"
+                                                Click="OnBrowseClick" />
+                                        <Button Content="清除" Padding="10,5" Margin="6,0,0,0"
+                                                Visibility="{Binding CanEdit, Converter={StaticResource BoolToVis}}"
+                                                Command="{Binding DataContext.ClearEntryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip="清空 → 回到默认位置" />
+                                        <Button Content="打开" Padding="10,5" Margin="6,0,0,0"
+                                                Command="{Binding DataContext.OpenEntryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+
+                <!-- ============================================================
+                     二、数据源（"怎么连 tosu"）
+                     ============================================================ -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="数据源" Style="{DynamicResource Text.CardTitle}" />
+
+                        <!-- 监听地址 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="监听地址" Style="{DynamicResource Text.Body}" />
+                            <TextBox svc:SettingIndex.Path="数据源.IP"
+                                     Width="200" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                     VerticalContentAlignment="Center"
+                                     Text="{Binding Ip, UpdateSourceTrigger=LostFocus}" />
+                        </StackPanel>
+
+                        <!-- 监听端口 + 测试连接 -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="监听端口" Style="{DynamicResource Text.Body}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <TextBox svc:SettingIndex.Path="数据源.端口"
+                                         Width="100" VerticalContentAlignment="Center"
+                                         Text="{Binding PortText, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding PortRangeHint}" VerticalAlignment="Center" Margin="10,0,0,0"
+                                           Style="{DynamicResource Text.Label}" />
+                                <Button Content="测试连接" Padding="12,5" Margin="12,0,0,0"
+                                        Command="{Binding TestConnectionCommand}" />
+                            </StackPanel>
+
+                            <TextBlock Text="{Binding PortWarning}"
+                                       Visibility="{Binding HasPortWarning, Converter={StaticResource BoolToVis}}"
+                                       Foreground="{DynamicResource Brush.Danger}"
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <!-- 测试结果：灯 + 那句话（**不落配置**，所以它不是"连接状态"，是"上次测试的结果"） -->
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="10" Height="10" VerticalAlignment="Center">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="{DynamicResource Brush.TextDisabled}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ConnectionStateKind}" Value="ok">
+                                                    <Setter Property="Fill" Value="{DynamicResource Brush.Success}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ConnectionStateKind}" Value="warn">
+                                                    <Setter Property="Fill" Value="{DynamicResource Brush.Warning}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ConnectionStateKind}" Value="error">
+                                                    <Setter Property="Fill" Value="{DynamicResource Brush.Danger}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+
+                                <TextBlock Text="{Binding ConnectionStateText}" Margin="8,0,0,0"
+                                           TextWrapping="Wrap">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource Text.Body}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ConnectionStateKind}" Value="ok">
+                                                    <Setter Property="Foreground" Value="{DynamicResource Brush.Success}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ConnectionStateKind}" Value="warn">
+                                                    <Setter Property="Foreground" Value="{DynamicResource Brush.Warning}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ConnectionStateKind}" Value="error">
+                                                    <Setter Property="Foreground" Value="{DynamicResource Brush.Danger}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- 启动等待秒数 -->
+                        <StackPanel>
+                            <TextBlock Text="启动等待秒数" Style="{DynamicResource Text.Body}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <TextBox svc:SettingIndex.Path="数据源.启动等待秒数"
+                                         Width="80" VerticalContentAlignment="Center"
+                                         Text="{Binding WaitSecondsText, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding WaitRangeHint}" VerticalAlignment="Center" Margin="10,0,0,0"
+                                           Style="{DynamicResource Text.Label}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding WaitWarning}"
+                                       Visibility="{Binding HasWaitWarning, Converter={StaticResource BoolToVis}}"
+                                       Foreground="{DynamicResource Brush.Danger}"
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <!-- ============================================================
+                             自动启动 / 退出时关闭（★ 2026-09-23）
+                             竖排一行一个 —— 这四个开关名字长、还各自带一句说明，
+                             铺成两列会让那两句说明挤成一团（用户对"数量不固定的东西"一律要竖排）。
+                             ============================================================ -->
+                        <Border BorderBrush="{DynamicResource Brush.Divider}" BorderThickness="0,1,0,0"
+                                Margin="0,4,0,14" />
+
+                        <TextBlock Text="自动启动" Style="{DynamicResource Text.CardTitle}" />
+
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="启动悬浮窗时自动启动 tosu" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="数据源.启动时自动启动tosu"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding AutoStartTosu}" Margin="0,6,0,0" />
+                            <TextBlock Text="要上面「tosu 程序」那一行填了路径才会生效。"
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="启动悬浮窗时自动启动 osu" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="数据源.启动时自动启动osu"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding AutoStartOsu}" Margin="0,6,0,0" />
+                            <TextBlock Text="同上，需要先填「osu 程序」那一行。"
+                                       Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Style="{DynamicResource SettingRow}">
+                            <TextBlock Text="退出时关闭 tosu" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="数据源.退出时关闭tosu"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding CloseTosuOnExit}" Margin="0,6,0,0" />
+                        </StackPanel>
+
+                        <StackPanel>
+                            <TextBlock Text="osu 退出时退出本程序" Style="{DynamicResource Text.Body}" />
+                            <ToggleButton svc:SettingIndex.Path="数据源.osu退出时退出程序"
+                                          Style="{DynamicResource ToggleSwitch}"
+                                          IsChecked="{Binding ExitWhenOsuExits}" Margin="0,6,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 生效方式：这一块**不即时**，所以必须写出来（定稿 §1.2：不许"点了没反应"） -->
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 底部保存栏 -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}"
+                BorderThickness="0,1,0,0"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="● 未保存" VerticalAlignment="Center"
+                           Foreground="{DynamicResource Brush.Warning}"
+                           FontWeight="SemiBold"
+                           Visibility="{Binding HasUnsavedChanges, Converter={StaticResource BoolToVis}}"
+                           Style="{DynamicResource Text.Caption}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="恢复默认" Padding="14,6" Command="{Binding ResetToDefaultCommand}" />
+                    <Button Content="放弃" Padding="14,6" Margin="8,0,0,0" Command="{Binding DiscardCommand}" />
+                    <Button Content="保存" Padding="18,6" Margin="8,0,0,0"
+                            Command="{Binding SaveCommand}"
+                            Background="{DynamicResource Brush.Primary}"
+                            Foreground="{DynamicResource Brush.TextOnPrimary}"
+                            BorderBrush="{DynamicResource Brush.Primary}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Toast -->
+        <Border x:Name="ToastPanel"
+                Grid.Row="0" Grid.RowSpan="2"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,68"
+                Background="{DynamicResource Brush.TextPrimary}"
+                CornerRadius="6" Padding="16,10"
+                MouseLeftButtonUp="OnToastClick">
+            <TextBlock x:Name="ToastText"
+                       Foreground="{DynamicResource Brush.Surface}"
+                       Style="{DynamicResource Text.Body}" />
+        </Border>
+    </Grid>
+</UserControl>

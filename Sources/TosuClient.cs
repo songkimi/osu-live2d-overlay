@@ -7,15 +7,40 @@
 //   所以这个文件里不该出现任何 JSON 字段名。
 //
 // 实测确认的数据路径：见 TosuJsonParser 的说明。
+//
+// 【显式写 using】（《项目结构约定》§五 规矩一之补）
+//   这个文件以后要是被某个验证工程链接，宿主工程不一定开 ImplicitUsings ——
+//   那时 `System`/`System.Threading.Tasks` 里的名字一个都看不见。
 // ============================================================
+using System;
 using System.Net.WebSockets;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace OsuLive2dOverlay;
 
 public sealed class TosuClient
 {
-    private const string DefaultUrl = "ws://127.0.0.1:24050/ws";
+    /// <summary>
+    /// 要连的地址。**构造时传进来，不在这里写死**（★ 2026-09-23）。
+    ///
+    /// 原来这里是 <c>private const string DefaultUrl = "ws://127.0.0.1:24050/ws";</c> ——
+    /// 而设置界面上的「监听地址 / 监听端口」两个框从那天起就存在了，
+    /// 只是**没有任何代码读它们**：用户在界面上把端口改成 24051，程序照样去连 24050，
+    /// 表现是"端口被占用了、我换一个"之后软件就再也连不上，而且**不报错**。
+    ///
+    /// 地址怎么拼只写一份（<see cref="DataSourceConfig.BuildUrl"/>）——
+    /// 这里、设置页的「测试连接」、将来自动启动的等待逻辑都用那一个。
+    /// </summary>
+    public string Url { get; }
+
+    /// <param name="url">完整的 WebSocket 地址，由 <see cref="DataSourceConfig.WebSocketUrl"/> 拼好</param>
+    public TosuClient(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) throw new ArgumentException("tosu 地址不能为空", nameof(url));
+        Url = url;
+    }
 
     /// <summary>
     /// 多久没收到**能用的**数据，就认定"游戏那边已经没了"（毫秒）。
@@ -52,8 +77,6 @@ public sealed class TosuClient
 
     /// <summary>收到的第一条原始消息（调试用，方便排查字段结构变化）</summary>
     public event Action<string>? FirstMessageReceived;
-
-    public string Url { get; init; } = DefaultUrl;
 
     /// <summary>持续运行：连不上就等 3 秒重试，断了也自动重连（tosu 或游戏重启后能自愈）</summary>
     public async Task RunAsync(CancellationToken token)

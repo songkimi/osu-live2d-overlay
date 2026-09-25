@@ -11,7 +11,7 @@
 //       { "Id": "Param150", "Value": 1, "Blend": "Add" }   → 把 Param150 加 1
 //     VTS 导出的模型（绒绒）一个表情只改一个参数；
 //     官方模型（Epsilon）一个表情改十几个参数（Angry 改 15 个）。
-//   · cdi3 —— Live2D **官方标准**的"显示辅助文件"，给参数配人话名字：
+//   · cdi3 —— Live2D **官方标准**的"显示辅助文件"，给参数配通俗名：
 //       绒绒的 Param150 叫「星星眼」，Epsilon 的 PARAM_TERE 叫「照れ」。
 //     VTS 成品和官方模型都可能带它。反过来 .vtube.json 是 VTube Studio 专有的，
 //     官方模型根本没有 —— 所以不去碰它。
@@ -77,7 +77,7 @@ public sealed class ExpressionCatalog
     private readonly Dictionary<string, string> _displayNames =
         new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>读文件时遇到的麻烦（人话，给日志用；单个表情坏掉不影响其它的）</summary>
+    /// <summary>读文件时遇到的麻烦</summary>
     public IReadOnlyList<string> Problems { get; }
 
     /// <summary>还没有清单时用的空实例（查什么都是空，不抛异常）</summary>
@@ -164,7 +164,7 @@ public sealed class ExpressionCatalog
     ///
     /// 返回 (参数表, 问题)，两个字段不会同时有内容：
     ///   成功 → (有内容, null)
-    ///   失败 → (空表, "人话原因")
+    ///   失败 → (空表, 原因)
     ///
     /// 绝不抛异常：一个表情的文件坏掉，不该让整个程序起不来。
     /// 注意"空"分两种，别混成一句：缺 Parameters 字段 = 文件坏了；
@@ -207,10 +207,10 @@ public sealed class ExpressionCatalog
     }
 
     /// <summary>
-    /// 读 cdi3，取出"参数 Id → 人话名字"。
+    /// 读 cdi3，取出"参数 Id → 注册名。
     ///
     /// 没有 cdi3 / 读不动 → 空表。这**不算错** —— 很多模型就是没给自己的参数配名字，
-    /// 那就老老实实显示标识（"3.exp3"），别编一个名字出来。所以这里不返回原因，
+    /// 那就老老实实显示标识（例如："3.exp3"）
     /// 空表本身就是答案。
     /// </summary>
     public static IReadOnlyDictionary<string, string> ReadParameterNames(string? cdi3Path)
@@ -242,17 +242,10 @@ public sealed class ExpressionCatalog
     }
 
     /// <summary>
-    /// 给一个表情起个"人话名字"。
+    /// 得到注册名。
     ///
     /// 规则：**恰好只改一个参数、且那个参数在 cdi3 里有名字**时才用它的名字；
     ///       其它情况一律返回标识本身。
-    ///
-    /// 为什么要卡"恰好一个"：这话的本质是在问**这个名字能不能代表整个表情**。
-    ///   绒绒的 3.exp3 只改 Param150，整个表情就是"开星星眼" → 叫「星星眼」准确。
-    ///   Epsilon 的 Angry 一口气改 15 个参数（眉毛、眼睛、嘴、脸颊…），
-    ///   挑哪一个都只是它的一部分，显示出来反而误导 ——
-    ///   而这种模型的文件名本身就是人看得懂词（Angry / Blushing / Sad），标识够用了。
-    ///
     /// 空白不算名字（这个方法对外公开，任何人都能塞一个字典进来）。
     /// </summary>
     public static string Describe(string id, IReadOnlyList<ExpressionParam> parameters,
@@ -269,7 +262,7 @@ public sealed class ExpressionCatalog
     }
 
     /// <summary>
-    /// 给设置界面用的表情一览（每个表情一行：标识 / 人话名字 / 参数个数）。
+    /// 给设置界面用的表情一览（每个表情一行：标识 / 注册名 / 参数个数）。
     ///
     /// 按标识做 Ordinal 排序 —— 用默认排序会把 "10.exp3" 排到 "2.exp3" 前面，用户看着像乱的。
     ///

@@ -1,0 +1,135 @@
+<!--
+  Tokens.Light.xaml —— 浅色主题的 Design Token（唯一出处）
+  ============================================================
+  参考风格：用户给的「UI风格图片」图 1（蓝色系卡片式仪表盘）。
+  只借它的**视觉语言**（圆角卡片 / 轻阴影 / 大留白 / 单一主色 + 少量强调色），
+  不借它的**排版**（那是"浏览型"界面，本软件是"密集设置项 + 实时预览"）。
+
+  【★ 2026-09-20 实测后重构：颜色一律用 HandyControl 的皮肤变量名】
+  ================================================================
+  把 HandyControl 的字典打开看了一遍，它的颜色是**两层**：
+
+    · 皮肤字典（Themes/SkinDefault.xaml → 合并 Basic/Colors/Colors.xaml）
+        **只有 `…Color`**：PrimaryColor / RegionColor / BorderColor / PrimaryTextColor …
+        共 35 个 —— **换肤换的就是这一批**
+    · Themes/Theme.xaml
+        952 个 key，其中 37 个是 `…Brush`（PrimaryBrush / RegionBrush …），
+        它们是**从上面那些 Color 派生**出来的笔刷
+
+  所以：
+    ① **主色这类"皮肤变量"必须用 HC 的 Color 名定义在这里** ——
+       否则 HC 的控件读的还是它自己的颜色，我们的界面就会出现两种蓝。
+    ② 我们自己的语义 Brush（`Brush.Primary` 之类）只是**别名**，
+       引用上面那些 Color —— 这样色值仍然只有一处。
+    ③ 为什么不禁用 HC 的 SkinDefault 只用自己这份？**因为换肤机制依赖同名 key**：
+       给同名 Color 就完成覆盖，比替换整个皮肤字典稳（HC 内部还有别的 key 会用到这些变量）。
+
+  【规矩】界面里不许写死颜色和字号，一律引这里。
+  【单位】字号已经是 DIP。pt → DIP 的换算在 Infrastructure/FontScale.cs。
+-->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+    <!-- ============================================================
+         一、颜色 —— 用 HandyControl 的皮肤变量名（这就是"换肤"）
+         ============================================================ -->
+
+    <!-- 主色（蓝系）。改这一行，HC 控件与我们的界面一起变 -->
+    <Color x:Key="PrimaryColor">#FF2D9CDB</Color>
+    <Color x:Key="DarkPrimaryColor">#FF2389C4</Color>
+    <Color x:Key="LightPrimaryColor">#FFE7F4FC</Color>
+    <Color x:Key="AccentColor">#FF2D9CDB</Color>
+    <Color x:Key="DarkAccentColor">#FF1D74A6</Color>
+
+    <!-- 表面与背景 -->
+    <Color x:Key="BackgroundColor">#FFF4F6F9</Color>
+    <Color x:Key="RegionColor">#FFFFFFFF</Color>
+    <Color x:Key="SecondaryRegionColor">#FFF4F6F9</Color>
+    <Color x:Key="ThirdlyRegionColor">#FFFFFFFF</Color>
+
+    <!-- 线与边框 -->
+    <Color x:Key="BorderColor">#FFE4E8ED</Color>
+    <Color x:Key="SecondaryBorderColor">#FFEEF1F4</Color>
+
+    <!-- 文字 -->
+    <Color x:Key="PrimaryTextColor">#FF1F2933</Color>
+    <Color x:Key="SecondaryTextColor">#FF7B8794</Color>
+    <Color x:Key="ThirdlyTextColor">#FF7B8794</Color>
+    <Color x:Key="TitleColor">#FF1F2933</Color>
+    <Color x:Key="ReverseTextColor">#FFFFFFFF</Color>
+    <Color x:Key="TextIconColor">#FF7B8794</Color>
+
+    <!-- 状态 -->
+    <Color x:Key="SuccessColor">#FF2FA84F</Color>
+    <Color x:Key="WarningColor">#FFE8A33D</Color>
+    <Color x:Key="DangerColor">#FFE05252</Color>
+    <Color x:Key="InfoColor">#FF2D9CDB</Color>
+
+    <!-- 我们自己的补充（HC 没有对应变量） -->
+    <Color x:Key="Color.TextDisabled">#FFB0B8C1</Color>
+    <Color x:Key="Color.Shadow">#22000000</Color>
+
+    <!-- ============================================================
+         二、我们自己用的语义 Brush（**只是别名**，色值仍然只有上面一处）
+         ============================================================ -->
+    <SolidColorBrush x:Key="Brush.Primary" Color="{StaticResource PrimaryColor}" />
+    <SolidColorBrush x:Key="Brush.PrimaryHover" Color="{StaticResource DarkPrimaryColor}" />
+    <SolidColorBrush x:Key="Brush.PrimaryPressed" Color="{StaticResource DarkAccentColor}" />
+    <SolidColorBrush x:Key="Brush.PrimarySoft" Color="{StaticResource LightPrimaryColor}" />
+
+    <SolidColorBrush x:Key="Brush.Window" Color="{StaticResource BackgroundColor}" />
+    <SolidColorBrush x:Key="Brush.Surface" Color="{StaticResource RegionColor}" />
+    <SolidColorBrush x:Key="Brush.Sidebar" Color="{StaticResource RegionColor}" />
+    <SolidColorBrush x:Key="Brush.NavSelected" Color="{StaticResource LightPrimaryColor}" />
+
+    <SolidColorBrush x:Key="Brush.TextPrimary" Color="{StaticResource PrimaryTextColor}" />
+    <SolidColorBrush x:Key="Brush.TextSecondary" Color="{StaticResource SecondaryTextColor}" />
+    <SolidColorBrush x:Key="Brush.TextDisabled" Color="{StaticResource Color.TextDisabled}" />
+    <SolidColorBrush x:Key="Brush.TextOnPrimary" Color="{StaticResource ReverseTextColor}" />
+
+    <SolidColorBrush x:Key="Brush.Border" Color="{StaticResource BorderColor}" />
+    <SolidColorBrush x:Key="Brush.Divider" Color="{StaticResource SecondaryBorderColor}" />
+    <SolidColorBrush x:Key="Brush.Success" Color="{StaticResource SuccessColor}" />
+    <SolidColorBrush x:Key="Brush.Warning" Color="{StaticResource WarningColor}" />
+    <SolidColorBrush x:Key="Brush.Danger" Color="{StaticResource DangerColor}" />
+
+    <!-- 卡片阴影：浅色下靠阴影分层；深色下它会失效，那份 Token 里减得很轻 -->
+    <DropShadowEffect x:Key="Effect.CardShadow"
+                      BlurRadius="14" ShadowDepth="2" Direction="270" Opacity="0.10" Color="#FF000000" />
+
+    <!-- ============================================================
+         三、圆角 / 间距 / 尺寸
+         ============================================================ -->
+    <CornerRadius x:Key="Radius.Card">12</CornerRadius>
+    <CornerRadius x:Key="Radius.Control">6</CornerRadius>
+    <CornerRadius x:Key="Radius.Chip">4</CornerRadius>
+
+    <Thickness x:Key="Pad.Card">16</Thickness>
+    <Thickness x:Key="Pad.Page">20</Thickness>
+    <Thickness x:Key="Pad.Control">8,6,8,6</Thickness>
+
+    <sys:Double x:Key="Size.NavWidth">180</sys:Double>
+    <sys:Double x:Key="Size.IdentifierListWidth">220</sys:Double>
+    <sys:Double x:Key="Size.PreviewWidth">360</sys:Double>
+    <sys:Double x:Key="Size.SpaceSmall">8</sys:Double>
+    <sys:Double x:Key="Size.SpaceMedium">12</sys:Double>
+    <sys:Double x:Key="Size.SpaceLarge">20</sys:Double>
+
+    <!-- ============================================================
+         四、字号层级（**单位已是 DIP**；括号里是等价的 pt）
+         基准 = 10.5pt = 14 DIP。运行时由代码按 通用.字号 重算这五个值
+         （Infrastructure/FontScale.cs 的 Dip()）。
+
+         ★ **这五个值必须是整数**：ClearType 按像素网格渲染字形，
+           非整数字号会让笔画落不到整像素上，小字被抹平/粘连 ——
+           用户看到的就是"处""置灰"这种字**长得像错别字**。
+           这正是本文件 2026-09-20 从 18.9/16.1/14/12.6/11.9 改成整数的原因。
+         ============================================================ -->
+    <sys:Double x:Key="FontSize.PageTitle">19</sys:Double>   <!-- 14.2pt -->
+    <sys:Double x:Key="FontSize.CardTitle">16</sys:Double>   <!-- 12.1pt -->
+    <sys:Double x:Key="FontSize.Body">14</sys:Double>        <!-- 10.5pt ← 基准 -->
+    <sys:Double x:Key="FontSize.Caption">13</sys:Double>     <!-- 9.5pt  -->
+    <sys:Double x:Key="FontSize.Label">12</sys:Double>       <!-- 8.9pt  -->
+
+</ResourceDictionary>

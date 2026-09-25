@@ -10,7 +10,10 @@
 //
 // 实测确认的数据路径：
 //   menu.state              —— 界面（0 主菜单 / 5 选歌 / 2 打歌 / 7 结算 / 13 多人大厅…）
-//   gameplay.gameMode       —— 0 = 还没进游戏，3 = 进了（含暂停）
+//   gameplay.gameMode       —— **这是哪个游玩模式**：0=osu 1=taiko 2=catch 3=mania。
+//                               ★ 它**不能**用来判断"进没进游戏"（2026-09-20 纠正，见下面的 Hp）
+//   gameplay.hp             —— 血条。加载中 = 0，歌曲一开始就是满的 → **判断进没进游戏靠它**
+//   gameplay.combo.current  —— 当前连击
 //   gameplay.combo.current  —— 当前连击
 //   gameplay.combo.max      —— 本局最大连击
 // ============================================================
@@ -21,12 +24,21 @@ namespace OsuLive2dOverlay;
 /// <summary>
 /// 从一包 tosu JSON 里抠出来的字段。
 ///
-/// MenuState / GameMode 用可空类型，是为了区分**「读到 0」和「没这个字段」** ——
+/// MenuState / GameMode / Hp 用可空类型，是为了区分**「读到 0」和「没这个字段」** ——
 /// 前者是"osu 在主菜单"，后者是"这一段数据里压根没有"，处理方式完全不同。
+///
+/// **★ Hp 是 2026-09-20 加的**：判断"进了游戏没有"要靠它，不能靠 GameMode。
+/// 原判据是 `gameMode == 3`，那其实是**误读了一局 mania**：
+/// mania 恰好是第四个模式（=3），于是"加载 0 → 打歌 3"看起来像个布尔值。
+/// **换成 std/taiko/catch，这个值从头到尾就是 0/1/2，永远不会变成 3** ——
+/// 结果就是打歌时角色不显示。详见 `GameStateTracker` 的说明。
+///
+/// GameMode 留着（不删）：它仍然是"这是哪个模式"的事实，只是**不再用来判断进没进游戏**。
 /// </summary>
 public readonly record struct TosuSnapshot(
     int? MenuState,
     int? GameMode,
+    double? Hp,
     int Combo,
     int MaxCombo);
 
@@ -63,12 +75,14 @@ public static class TosuJsonParser
             var menuState = root.TryGetProperty("menu", out var menuEl) ? ReadInt(menuEl, "state") : null;
 
             int? gameMode = null;
+            double? hp = null;
             var combo = 0;
             var maxCombo = 0;
 
             if (root.TryGetProperty("gameplay", out var gameplayEl))
             {
                 gameMode = ReadInt(gameplayEl, "gameMode");
+                hp = ReadHp(gameplayEl);
 
                 if (gameplayEl.ValueKind == JsonValueKind.Object
                     && gameplayEl.TryGetProperty("combo", out var comboEl))
@@ -78,7 +92,7 @@ public static class TosuJsonParser
                 }
             }
 
-            return new TosuSnapshot(menuState, gameMode, combo, maxCombo);
+            return new TosuSnapshot(menuState, gameMode, hp, combo, maxCombo);
         }
     }
 
@@ -95,5 +109,48 @@ public static class TosuJsonParser
         if (!parent.TryGetProperty(name, out var el)) return null;
         if (el.ValueKind != JsonValueKind.Number) return null;
         return el.TryGetInt32(out var value) ? value : null;
+    }
+
+    /// <summary>
+    /// 读血条。**它不是一个数字，是一个对象**：
+    /// <code>"hp": { "normal": 200, "smooth": 200 }</code>
+    ///
+    /// ★ 2026-09-20 实测纠错 —— 这里原来按"数字"解析（还在注释里专门担心过 `200.0`
+    /// 这种带小数点的写法），于是 `ValueKind != Number` 直接返回 null。
+    /// 后果不是"读不到就算了"：当时还配了一句"缺 hp 就乐观当作在游戏里"的兜底，
+    /// 两错叠加 → **加载期间角色就跳到打歌的位置**（用户实测发现，抓包在
+    /// `osu插件探索\加载界面判断`）。
+    ///
+    /// > 教训：**字段的形状要去抓包里看，不能靠猜。** 当时 `TosuPacketLogger` 的抓包
+    /// > 就在手边，我担心的是"它会不会是 200.0"，真正的问题是"它根本不是数字"。
+    ///
+    /// 取 `normal`（真实血量）；`smooth` 是给界面用的平滑值，只在没有 `normal` 时退而求其次。
+    /// 另外仍然接受"直接就是个数字"的写法 —— 万一某个 tosu 版本或 lazer 那样报。
+    /// </summary>
+    private static double? ReadHp(JsonElement gameplayEl)
+    {
+        if (gameplayEl.ValueKind != JsonValueKind.Object) return null;
+        if (!gameplayEl.TryGetProperty("hp", out var hpEl)) return null;
+
+        if (hpEl.ValueKind == JsonValueKind.Object)
+            return ReadDouble(hpEl, "normal") ?? ReadDouble(hpEl, "smooth");
+
+        return hpEl.ValueKind == JsonValueKind.Number && hpEl.TryGetDouble(out var value) ? value : null;
+    }
+
+    /// <summary>
+    /// 从一个对象里读一个浮点数。
+    ///
+    /// **hp 的 `normal` / `smooth` 这类字段必须用这个读，不能用 <see cref="ReadInt"/>**：
+    /// 它们完全可能报成 `200.0` 或 `0.85` 这种带小数点的形式，
+    /// 而 `TryGetInt32` 对 `200.0` 会返回 **false**（它按整数文本解析，小数点就过不了）——
+    /// 于是被读成 null，判据永远不成立，**打歌时角色又不显示了**。
+    /// </summary>
+    private static double? ReadDouble(JsonElement parent, string name)
+    {
+        if (parent.ValueKind != JsonValueKind.Object) return null;
+        if (!parent.TryGetProperty(name, out var el)) return null;
+        if (el.ValueKind != JsonValueKind.Number) return null;
+        return el.TryGetDouble(out var value) ? value : null;
     }
 }

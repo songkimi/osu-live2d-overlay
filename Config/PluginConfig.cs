@@ -1,11 +1,11 @@
 // ============================================================
 // PluginConfig.cs —— 配置模型
 //
-// 设计原则（用户定的）：**插件不做"针对特定模型"的增强，把可配的都做成配置**。
+// 设计原则：**插件不做"针对特定模型"的增强，把可配的都做成配置**。
 //   · 模型路径、动作/表情清单 —— 换个人用别的模型只改这里
 //   · 连击/失误 配哪个表情 —— 用户自己挑
 //   · 位置与大小 —— 用户自己调
-// 所以这个文件里没有任何"绒绒"专属的硬编码。
+// 所以这个文件里没有任何Live2d模型专属的硬编码。
 // ============================================================
 using System.IO;
 using System.Text.Json;
@@ -26,6 +26,16 @@ public sealed class PluginConfig
     [JsonPropertyName("口型")] public MouthConfig Mouth { get; set; } = new();
     [JsonPropertyName("表现")] public PerformanceConfig Performance { get; set; } = new PerformanceConfig();
 
+    
+    /// <summary>
+    /// 配置结构版本，为将来迁移用。
+    /// 键名是**英文**（与其他中文键名不同）—— 它是给程序看的元数据，不是给用户配的。
+    /// **两个配置文件各自有一份**：这个管档案，`AppSettings`（settings.json）管软件设置。
+    /// （这里故意不写 `<see cref="AppSettings"/>` —— 验证工程常常只链接本文件，
+    ///   引用一个它没有的类型会报 CS1574 警告；注释里直接写名字就够了。）
+    /// </summary>
+    [JsonPropertyName("schemaVersion")] public int SchemaVersion { get; set; } = 1;
+
     /// <summary>
     /// 界面感知：四个界面各一份档位（显示什么、显示在哪、能不能点）。
     ///
@@ -41,12 +51,6 @@ public sealed class PluginConfig
     [JsonPropertyName("目光跟随鼠标")] public bool FollowCursor { get; set; } = true;
 
     /// <summary>
-    /// 调试模式：把"表情未播放""库里拒绝"这类开发期信息显示在画面上。
-    /// 默认 false —— 面向玩家时这些都属噪音（多数情况下玩家本来也察觉不到，提示出来反而像报错）。
-    /// </summary>
-    [JsonPropertyName("调试模式")] public bool DebugMode { get; set; }
-
-    /// <summary>
     /// 读写配置统一的序列化选项。
     /// 运行期改配置（比如把拖动后的窗口位置写回去）也要用它，所以是 internal 而不是 private。
     /// </summary>
@@ -57,13 +61,12 @@ public sealed class PluginConfig
         AllowTrailingCommas = true,                        // 允许末尾多余逗号
         WriteIndented = true,
 
-        // **必须关掉"非 ASCII 转义"**：默认行为会把中文键名写成 \u754C\u9762\u611F\u77E5 这种，
-        // 配置文件就彻底没法看了 —— 而它本来就是要给人读、给人改的。
-        // （读取从来不受影响，只有写出来的时候才会露馅，所以这个坑藏得比较深。）
+        // **必须关掉"非 ASCII 转义"**：默认行为会把中文键名写成 \u754C\u9762\u611F\u77E5 这种
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    /// <summary>从程序目录读取 config.json；读不到就用默认值（并生成一份模板）</summary>
+    /// <summary>从给定路径读取档案配置；读不到就用默认值（并生成一份模板）。
+    /// 路径由 <c>ProfileLocator</c> 算出来（`profiles\&lt;当前档案名&gt;.json`）。</summary>
     public static PluginConfig Load(string path)
     {
         try
@@ -99,6 +102,7 @@ public sealed class PluginConfig
         Miss ??= new MissConfig();
         Performance ??= new PerformanceConfig();
 
+        
         PersistentParts ??= new List<string>();
         Ranges ??= new List<ComboRanger>();
         ComboTriggers ??= new List<ComboTrigger>();
@@ -109,15 +113,13 @@ public sealed class PluginConfig
 
         foreach (var trigger in ComboTriggers) trigger.Reaction ??= new ReactionConfig();
 
-        // 界面感知：老配置里没有这一段 → 用原来的全局模型与视图参数生成一份四档。
-        // 不能让它默认"四档全关"：这一段直接决定角色显示不显示，那样老用户升级后角色会消失。
-        // 有这一段就照它来（哪怕四档全关，那是用户自己的决定），只补齐可能被手改坏的嵌套对象。
+        
         Scenes ??= BuildDefaultScenes();
         NormalizeScenes();
     }
 
     /// <summary>
-    /// 生成默认的四份档位：都启用、都用全局模型入口与视图参数，窗口位置留空（窗口不动）。
+    /// 生成默认的四份档位：都启用、站位沿用全局视图参数，窗口位置留空（窗口不动）。
     /// 只在"配置文件里还没有界面感知这一段"时用 —— 也就是一次迁移。
     /// </summary>
     private SceneProfiles BuildDefaultScenes()
@@ -128,7 +130,6 @@ public sealed class PluginConfig
         SceneProfile Make(bool clickThrough) => new()
         {
             Enabled = usable,
-            Model = entry,
             Character = new CharacterPlacement
             {
                 X = View.OffsetX,
@@ -162,7 +163,6 @@ public sealed class PluginConfig
         {
             profile.Window ??= new WindowPlacement();
             profile.Character ??= new CharacterPlacement();
-            profile.Model ??= "";
         }
     }
 }
@@ -207,12 +207,6 @@ public class ComboTrigger
 
 /// <summary>
 /// 断连击时的表现：分两档，**每档都有门槛**。
-///
-/// 为什么要有门槛（用户按皮肤作者的通行做法定的）：
-///   断连击前手里得先有像样的连击，"可惜"这件事才成立。
-///   玩得菜的人连 50 都上不去，如果一断就叹气、就安慰，只会让人更难受 ——
-///   所以连击还没到「小额门槛」就断了，表情和语音都**什么都不做**。
-///   顺带一提，门槛本身就是最好的节流：频繁触发的场景从源头上就没了。
 /// </summary>
 public class MissConfig
 {
@@ -233,7 +227,7 @@ public sealed class VoiceConfig
 {
     [JsonPropertyName("启用")] public bool Enabled { get; set; }
 
-    /// <summary>语音文件所在目录（和模型一样，建议放在仓库外 —— 从游戏里拆出来的音频不能公开）</summary>
+    /// <summary>语音文件所在目录</summary>
     [JsonPropertyName("目录")] public string Directory { get; set; } = "";
 
     /// <summary>音量 0~1</summary>
@@ -372,3 +366,4 @@ public class PerformanceConfig
 }
 public enum LengthStrategyKind { Longest, ExpressionFirst }
 public enum RepeatStrategyKind { KeepPlaying, SwitchToNew }
+

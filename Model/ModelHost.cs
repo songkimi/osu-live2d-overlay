@@ -150,33 +150,14 @@ public static class ModelHost
     /// 把配置里所有"被引用到的标识"收集起来（表情 + 动作）。
     /// 从配置反向收集是刻意的：模型里可能有好几百个资源，**只有被引用的才需要补**。
     /// 把整个模型都注册进去既没必要，也会让页面上的可选项变得难以理解。
+    ///
+    /// 2026-09-20：实现搬去了 `Logic/ExpressionReferences.cs`。
+    /// 因为「形象」页也要知道"这个标识被引了几处"，如果再在这儿留着这一份，
+    /// 补丁和界面就会各按各的收 —— 那是**两份真相**（这个项目一路在删的东西）。
+    /// 现在只有 `ExpressionReferences` 知道"什么算引用"，这里只是它的一个用法。
     /// </summary>
     private static (HashSet<string> Expressions, HashSet<string> Motions) CollectUsedIds(PluginConfig config)
-    {
-        var expressions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var motions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        void Take(ReactionConfig? reaction)
-        {
-            if (reaction is null) return;
-            if (!string.IsNullOrWhiteSpace(reaction.Expression)) expressions.Add(reaction.Expression.Trim());
-            if (!string.IsNullOrWhiteSpace(reaction.Action)) motions.Add(reaction.Action.Trim());
-        }
-
-        foreach (var part in config.PersistentParts)
-            if (!string.IsNullOrWhiteSpace(part)) expressions.Add(part.Trim());
-
-        foreach (var range in config.Ranges)
-            if (!string.IsNullOrWhiteSpace(range.Expression)) expressions.Add(range.Expression.Trim());
-
-        foreach (var trigger in config.ComboTriggers) Take(trigger.Reaction);
-        Take(config.Miss.SmallReaction);
-        Take(config.Miss.BigReaction);
-
-        if (!string.IsNullOrWhiteSpace(config.Model.IdleGroup)) motions.Add(config.Model.IdleGroup.Trim());
-
-        return (expressions, motions);
-    }
+        => ExpressionReferences.UsedIds(config);
 
     private static ModelResource? FindById(IReadOnlyList<ModelResource> list, string id)
         => list.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));

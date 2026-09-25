@@ -1,0 +1,200 @@
+<!-- ============================================================
+     ModelView.xaml —— 「形象」页
+
+     【这一版是最小竖切】
+       当前模型（目录 → 扫描 → 入口 / 待机动作）+ 扫描结果 + 目光跟随鼠标。
+       **标识列表（表情库 / 动作库）与预览区不在这里** 
+
+     【路径框只读】定稿 §8.3：一律"只读框 + [浏览] + [打开]" ——
+       手打路径太容易错（少个斜杠、全角字符），而这类错**不报错、只是找不到**。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.ModelView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:svc="clr-namespace:OsuLive2dOverlay"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}"
+             Loaded="OnLoaded">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+            <StackPanel Margin="20">
+
+                <TextBlock Text="形象" Style="{DynamicResource Text.PageTitle}" />
+                
+
+                <!-- ① 当前模型 -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0" Text="当前模型"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.CardTitle}" />
+                            <Button Grid.Column="1" Content="重新扫描" Padding="12,5"
+                                    Command="{Binding RescanCommand}" />
+                        </Grid>
+
+                        <!-- 模型目录 -->
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0" Text="模型目录"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Body}" />
+
+                            <TextBox Grid.Column="1"
+                                     svc:SettingIndex.Path="模型.目录"
+                                     Text="{Binding ModelDirectory, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     VerticalContentAlignment="Center"
+                                     Margin="0,0,8,0"
+                                     ToolTip="{Binding ModelDirectory}" />
+
+                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                <Button Content="浏览" Padding="10,5" Click="OnBrowseClick" />
+                                <Button Content="打开" Padding="10,5" Margin="6,0,0,0"
+                                        Command="{Binding OpenModelFolderCommand}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- 模型入口 -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0" Text="模型入口"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Body}" />
+
+                            <ComboBox Grid.Column="1"
+                                      svc:SettingIndex.Path="模型.入口"
+                                      Width="320" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding EntryOptions}"
+                                      SelectedItem="{Binding ModelEntry}"
+                                      IsEnabled="{Binding HasEntries}" />
+                        </Grid>
+
+                        <!-- 待机动作 -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0" Text="待机动作"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Body}" />
+
+                            <ComboBox Grid.Column="1"
+                                      svc:SettingIndex.Path="模型.待机动作"
+                                      Width="320" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding IdleGroupOptions}"
+                                      SelectedItem="{Binding IdleGroup}"
+                                      IsEnabled="{Binding HasEntries}" />
+                        </Grid>
+
+                        <TextBlock Text="{Binding ScanSummary}"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource Brush.TextSecondary}"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,14,0,0" />
+
+                        <TextBlock Text="{Binding ScanProblems}"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource Brush.Warning}"
+                                   Visibility="{Binding HasScanProblems, Converter={StaticResource BoolToVis}}"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,6,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ② 目光跟随鼠标 -->
+                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="目光跟随鼠标" Style="{DynamicResource Text.CardTitle}" />
+
+                        <ToggleButton svc:SettingIndex.Path="目光跟随鼠标"
+                                      Style="{DynamicResource ToggleSwitch}"
+                                      IsChecked="{Binding FollowCursor}"
+                                      HorizontalAlignment="Left"
+                                      Margin="0,10,0,0" />
+
+                        
+                    </StackPanel>
+                </Border>
+
+                <!-- ③ ★ 2026-09-23 这里原来有第三张卡片「标识与预览（未做）」（表情/动作清单 + 预览）。
+                     用户拍板：**标识清单整块搬到「行为」页** —— 因为预览区只做在「行为」
+                     （「形象」不内嵌 WebView2，这是更早的裁决），而"点一下在右边看到它长什么样"
+                     这件事没有预览就立不住；清单也该出现在它真正被使用的地方。
+                     于是这一页管三件事：模型（目录/入口/待机动作）、扫描结果、目光跟随。 -->
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 底部保存栏 -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}"
+                BorderThickness="0,1,0,0"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="● 未保存" VerticalAlignment="Center"
+                           Foreground="{DynamicResource Brush.Warning}"
+                           FontWeight="SemiBold"
+                           Visibility="{Binding HasUnsavedChanges, Converter={StaticResource BoolToVis}}"
+                           Style="{DynamicResource Text.Caption}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="恢复默认" Padding="14,6" Command="{Binding ResetToDefaultCommand}" />
+                    <Button Content="放弃" Padding="14,6" Margin="8,0,0,0" Command="{Binding DiscardCommand}" />
+                    <Button Content="保存" Padding="18,6" Margin="8,0,0,0"
+                            Command="{Binding SaveCommand}"
+                            Background="{DynamicResource Brush.Primary}"
+                            Foreground="{DynamicResource Brush.TextOnPrimary}"
+                            BorderBrush="{DynamicResource Brush.Primary}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Toast -->
+        <Border x:Name="ToastPanel"
+                Grid.Row="0" Grid.RowSpan="2"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,68"
+                Background="{DynamicResource Brush.TextPrimary}"
+                CornerRadius="6" Padding="16,10"
+                MouseLeftButtonUp="OnToastClick">
+            <TextBlock x:Name="ToastText"
+                       Foreground="{DynamicResource Brush.Surface}"
+                       Style="{DynamicResource Text.Body}" />
+        </Border>
+    </Grid>
+</UserControl>

@@ -50,6 +50,9 @@ public sealed class ComboTracker
     /// </summary>
     public int CurrentRangeIndex => _lastRange;
 
+    /// <summary>上一次喂进来的连击（只给日志用：作废记忆时说得出"上一局到过多少"）</summary>
+    public int LastCombo => _lastCombo;
+
     /// <summary>
     /// thresholds：阈值（来自配置，比如 50、100、200）；可能乱序、重复、带 0，需要你整理
     /// ranges：连击区间；顺序有意义，不要排序；Min &gt; Max 的非法项要忽略
@@ -91,7 +94,24 @@ public sealed class ComboTracker
     /// 喂入新的连击数，返回这一瞬间需要处理的事件。
     /// 返回**空列表**表示什么都不用做（不是 null）。
     /// </summary>
-    public IReadOnlyList<ComboEvent> Update(int combo, int maxCombo)
+    /// <param name="combo">这一包报的连击</param>
+    /// <param name="maxCombo">这一包报的最大连击</param>
+    /// <param name="inGame">
+    /// **现在是不是在打歌**。
+    ///
+    /// 【为什么要有这个参数】（★ 2026-09-23 修"打完歌角色又做一次表现"）
+    ///   「跨阈值」和「断连击」这两件事**只在打歌里有意义** ——
+    ///   打歌之外 tosu 照样报连击，但那是上一局的残留值：
+    ///   实测（2026-09-22 抓包）退回选歌时 state 已经是 5，而 gameplay 段里
+    ///   combo=85 / score=712897 还挂着，下一包才整体归零。
+    ///
+    ///   所以外面的调用方在非打歌时**按 combo=0 喂**（见 OverlayWindow.OnComboUpdated），
+    ///   并且把这里设为 false：区间照算（常态表情要跟着回到"0 连击那一档"），
+    ///   但断连击与跨阈值一概不报 —— 那两件事报出来就是"凭空做一次反应"。
+    ///
+    ///   默认 true 是为了让老的调用点（练习与验证工程那一堆）行为一个字不变。
+    /// </param>
+    public IReadOnlyList<ComboEvent> Update(int combo, int maxCombo, bool inGame = true)
     {
         List<ComboEvent> comboEvents = new List<ComboEvent>();
         int range = _lastRange;
@@ -99,7 +119,7 @@ public sealed class ComboTracker
         {
             if (_comboRanges[i].Min <= combo && combo <= _comboRanges[i].Max) { range = i; break; }
         }
-        if (combo < _lastCombo)
+        if (inGame && combo < _lastCombo)
         {
             var broke = new ComboEvent(ComboEventKind.Break, combo, _lastCombo, _lastLevel, 0, maxCombo, range);
             comboEvents.Insert(0, broke);
@@ -116,12 +136,22 @@ public sealed class ComboTracker
             if (combo >= _thresholds[i])
                 level++;
 
-        if (level > _lastLevel)
+        if (inGame && level > _lastLevel)
         {
             var stepped = new ComboEvent(ComboEventKind.Step, combo, _lastCombo, level, _thresholds[level - 1], maxCombo,range);
-            _lastLevel = level;
             comboEvents.Add(stepped);
         }
+
+        // ★ `_lastLevel` 现在**总是跟着 combo 走**（原来只在"报 Step"时更新）。
+        //
+        //   理由是上面那个 inGame：非打歌时我们按 combo=0 喂，这里必须把等级一起归零 ——
+        //   否则下一局开局 combo 涨过第一个阈值时，"level > _lastLevel" 不成立，
+        //   连击表情就**再也不会触发**（一种很典型的静默失效）。
+        //
+        //   顺带修掉一个老毛病：combo 下降但仍高于阈值时（数据抖动会出现），
+        //   旧写法会在报完 Break 之后紧接着再报一个 Step —— 那是凭空多出来的表现。
+        _lastLevel = level;
+
         _lastCombo = combo;
 
         
@@ -131,17 +161,21 @@ public sealed class ComboTracker
     /// <summary>
     /// 把内部记忆清回初始状态：连击 0、等级 0、没有区间。
     ///
-    /// 为什么需要它：Update 判断"断连击"的唯一依据是 **combo 比上次小**。
-    /// 而这个判断只在打歌中成立 —— 出了游戏，tosu 报的连击会归 0
-    /// （结算停在最终值，回选歌那一刻变 0），旧记忆还在的话，
-    /// "0 &lt; 上一局的 1399" 就会被判成断连击 → 角色在选歌界面凭空做一次失误反应。
+    /// ★ **调用时机（2026-09-23 改过）**：**离开打歌的那一刻**调一次。
     ///
-    /// 所以语义是：**一局结束，连击这件事从头再来，记忆也必须清掉。**
-    /// 调用时机由外面的调用方掌握（进入打歌的那一刻调一次），
-    /// 而且**不能在连击归 0 时调** —— 归 0 是数据，不是事件，打歌中真的断连击也得照报。
+    ///   原来是在"**进入**打歌"时调的，那是有问题的：
+    ///   进入打歌的那一包数据里，combo **未必是 0** —— 从加载切到打歌、或者场景被一包
+    ///   残留数据误判成 Playing 时，同一包里 combo 可能还是上一局的高值。
+    ///   记忆刚清成 0，紧接着就吃到"1000" → 会被当成**连击刚刚涨上去** →
+    ///   凭空报一次 RangeChanged + Step（角色的常态表情与最高阈值表情一起重放一遍）。
+    ///   用户报的现象正是这个："打完歌角色会再次触发打歌那一区间的常态表情，
+    ///   同时似乎还触发了最高阈值的那个状态"。
+    ///
+    ///   改成"离开时清"之后，进入打歌时记忆本来就是干净的：
+    ///   第一包无论报 0 还是报几十，都是**真实的当下状态**，不会重放任何东西。
     ///
     /// 清完后 <see cref="CurrentRangeIndex"/> 回到 -1，所以下一次 Update 一定会
-    /// 报一次 RangeChanged（新局开局把常态表情摆回正确的档位）。
+    /// 报一次 RangeChanged（把常态表情摆回正确的档位）。
     /// </summary>
     public void Reset()
     {

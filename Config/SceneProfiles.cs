@@ -133,14 +133,88 @@ public sealed class CharacterPlacement
     }
 }
 
+/// <summary>
+/// 同一个界面里，**按游玩模式分别给的站位**（2026-09-20，定稿决策 50）。
+///
+/// 【为什么需要它】
+///   四个界面里只有「打歌」会因模式而变：mania 是竖条列、std 是打击区、
+///   catch 是接水果 —— 角色该站哪、多大，跟着不一样。
+///   主菜单 / 选歌 / 结算的布局跟模式无关，所以给它们也留一份纯属浪费
+///   （而且会把"每界面一份站位"变成"每界面 × 每模式"，直接 16 档）。
+///
+/// 【整份覆盖，不是逐字段】
+///   写了一份就是这一档的完整站位；**没写的那几个模式自动用场景自己的站位**。
+///   不做"逐字段继承"是刻意的：用户说的就是"各一套站位"，
+///   而逐字段继承在界面上要用 4 个"继承/覆盖"开关 × 4 个模式来表达 ——
+///   比它解决的问题更麻烦。（窗口摆放那套逐字段，是因为它有"手改半个配置"的历史包袱。）
+///
+/// 【键名用名字不用数字】`"mania"` 谁都看得懂，`"3"` 得回去翻代码。
+/// </summary>
+public sealed class ModePlacements
+{
+    /// <summary>osu!standard 的站位（**自定义 ruleset 也报 0，会套用这一份**）</summary>
+    [JsonPropertyName("osu")] public CharacterPlacement? Standard { get; set; }
+
+    [JsonPropertyName("taiko")] public CharacterPlacement? Taiko { get; set; }
+
+    [JsonPropertyName("catch")] public CharacterPlacement? Catch { get; set; }
+
+    [JsonPropertyName("mania")] public CharacterPlacement? Mania { get; set; }
+
+    /// <summary>某个模式的那一份；没单独设过 → null（调用方退回场景自己的站位）</summary>
+    public CharacterPlacement? Get(GameMode mode) => mode switch
+    {
+        GameMode.Standard => Standard,
+        GameMode.Taiko => Taiko,
+        GameMode.Catch => Catch,
+        GameMode.Mania => Mania,
+        _ => null
+    };
+
+    /// <summary>
+    /// 设定某个模式的那一份。**没有就新建一个对象填进去** ——
+    /// 界面那边是"勾上单独设置 → 四个数值一起改"，所以这里要能现造。
+    /// </summary>
+    public CharacterPlacement Ensure(GameMode mode)
+    {
+        var slot = Get(mode);
+        if (slot is not null) return slot;
+
+        slot = new CharacterPlacement();
+        switch (mode)
+        {
+            case GameMode.Standard: Standard = slot; break;
+            case GameMode.Taiko: Taiko = slot; break;
+            case GameMode.Catch: Catch = slot; break;
+            case GameMode.Mania: Mania = slot; break;
+        }
+
+        return slot;
+    }
+
+    /// <summary>
+    /// 取消某个模式的单独设置 → 它回到"用场景自己那份站位"。
+    ///
+    /// 界面上那个「单独设置」勾选框取消时走这里。**整份清掉，不保留数值** ——
+    /// 留着的话下次勾上会冒出上一次的旧值，用户会以为"我没设过啊"。
+    /// </summary>
+    public void Clear(GameMode mode)
+    {
+        switch (mode)
+        {
+            case GameMode.Standard: Standard = null; break;
+            case GameMode.Taiko: Taiko = null; break;
+            case GameMode.Catch: Catch = null; break;
+            case GameMode.Mania: Mania = null; break;
+        }
+    }
+}
+
 /// <summary>一个界面的档位：这个界面显示什么、显示在哪、能不能点</summary>
 public sealed class SceneProfile
 {
     /// <summary>【需重载】这个界面要不要启用界面感知</summary>
     [JsonPropertyName("启用")] public bool Enabled { get; set; }
-
-    /// <summary>【需重载】模型入口文件名。空 = 这一档没有模型（＝没配置）</summary>
-    [JsonPropertyName("模型")] public string Model { get; set; } = "";
 
     /// <summary>【运行期可改】窗口状态：位置 / 尺寸 / 穿透 / 吸附</summary>
     [JsonPropertyName("悬浮窗")] public WindowPlacement Window { get; set; } = new();
@@ -149,17 +223,47 @@ public sealed class SceneProfile
     [JsonPropertyName("站位")] public CharacterPlacement Character { get; set; } = new();
 
     /// <summary>
+    /// 【需重载】按游玩模式分别给的站位（决策 50）。null / 缺某个模式 = 那个模式用
+    /// 上面那份 <see cref="Character"/>。
+    ///
+    /// **界面上只给「打歌」提供编辑入口** —— 其余三档的布局不随模式变，
+    /// 露出来只会让人以为它们也需要设。（数据模型是通用的、读取也是通用的：
+    /// 只要有人往别的档位里写了，它就生效 —— 不是死字段。）
+    /// </summary>
+    [JsonPropertyName("模式站位")] public ModePlacements? ByMode { get; set; }
+
+    /// <summary>
     /// 【需重载】这个界面允不允许点击角色（触摸反应）。
     /// 首版不做触摸，先留位并写明"后续版本" —— 留个位置才能记住这条链还没走完。
     /// </summary>
     [JsonPropertyName("允许触摸")] public bool TouchEnabled { get; set; }
 
     /// <summary>
-    /// 这一档能不能显示 —— 服务运行时拿它做最后一道判断。
-    /// 两个条件缺一不可：启用了，而且真的配了模型
-    /// （空白字符不算配："看起来配了"不等于"配了"）。
+    /// **这个界面在这个模式下该用哪份站位** —— 服务运行时问的就是它。
+    ///
+    /// 两层：`模式站位[mode]` → `站位`。模式认不出（null）或那个模式没单独设过
+    /// → 都用场景自己那份，**不会瞎猜**。
     /// </summary>
-    [JsonIgnore] public bool IsUsable => Enabled && !string.IsNullOrWhiteSpace(Model);
+    public CharacterPlacement PlacementFor(GameMode? mode)
+        => (mode is not null ? ByMode?.Get(mode.Value) : null) ?? Character;
+
+    /// <summary>
+    /// 这一档要不要显示角色 —— 服务运行时拿它做最后一道判断。
+    ///
+    /// **只看"启用"这一个开关**（2026-09-20 改）。
+    /// 原来还要求"这一档填了模型"（`界面感知.{界面}.模型` 非空），但那个字段是**冗余**的：
+    /// 迁移时 `Enabled` 本来就是由全局 `模型.入口` 推出来的（见 `BuildDefaultScenes`），
+    /// 而悬浮窗显示的**始终是全局那一个模型**（`模型{}` 段）——
+    /// 代码里从来没有"每个界面各用一个模型"这回事。
+    ///
+    /// 那个多余的要求只带来一个**假警报**：手改过的配置里"启用=真、模型=空"
+    /// 就会报"这一档不显示角色"，而角色其实好好地在那儿。
+    /// 已经按用户拍板删掉了那个字段与那条规则。
+    ///
+    /// "有没有模型"是**全局**的事，由体检的 `模型.目录` / `模型.入口` 两条规则管 ——
+    /// 那是它该待的地方。
+    /// </summary>
+    [JsonIgnore] public bool IsUsable => Enabled;
 
     /// <summary>
     /// 把别人的内容搬进**自己**：自己这个对象不换，只换里面的值。
@@ -172,7 +276,6 @@ public sealed class SceneProfile
     public void CopyFrom(SceneProfile other)
     {
         Enabled = other.Enabled;
-        Model = other.Model;
         TouchEnabled = other.TouchEnabled;
 
         if (other.Window is not null)
@@ -185,6 +288,22 @@ public sealed class SceneProfile
         {
             Character ??= new CharacterPlacement();
             Character.CopyFrom(other.Character);
+        }
+
+        // 模式站位：逐个模式搬，**来源没设的那个模式自己保持原样**
+        // （和上面"来源是 null 就不动"同一条规矩）。
+        // 不整个换 ByMode 对象：界面可能已经绑着里面某一份站位的控件。
+        if (other.ByMode is not null)
+        {
+            ByMode ??= new ModePlacements();
+
+            foreach (var mode in GameModes.All)
+            {
+                var source = other.ByMode.Get(mode);
+                if (source is null) continue;
+
+                ByMode.Ensure(mode).CopyFrom(source);
+            }
         }
     }
 }

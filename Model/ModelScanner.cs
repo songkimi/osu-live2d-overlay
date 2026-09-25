@@ -52,6 +52,57 @@ public class Model3Root
 public static class ModelScanner
 {
     /// <summary>
+    /// 在模型目录里**找出**入口文件（`*.model3.json`）。
+    ///
+    /// 【为什么需要它】「形象」页上"模型入口"是**只读**的 —— 用户自己的原话：
+    /// "模型入口该由扫描器决定，界面上应该是 readonly 展示，让用户手打很危险"。
+    /// 所以入口不能靠用户输，只能由扫描器找出来。而 <see cref="Scan"/> 是**先要入口**
+    /// 才肯扫的，两者之间就缺了这一步。
+    ///
+    /// 返回的是**相对模型目录的路径**（不是完整路径）—— 因为 `Scan` 收的是
+    /// `Path.Combine(模型目录, 入口)`，相对路径正好能用，顺带也说明了它藏在哪个子目录里。
+    ///
+    /// 顶层优先、再往下找：大多数模型把 model3.json 放在模型目录的根上，
+    /// 但也见过塞在子目录里的。绝不抛异常（目录不存在 → 空列表）。
+    /// </summary>
+    public static IReadOnlyList<string> FindEntries(string modelDirectory)
+    {
+        var found = new List<string>();
+
+        try
+        {
+            if (!Directory.Exists(modelDirectory)) return found;
+
+            var root = Path.GetFullPath(modelDirectory);
+
+            foreach (var file in Directory.EnumerateFiles(root, "*.model3.json", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(root, file);
+                if (relative.StartsWith("..", StringComparison.Ordinal)) continue;   // 不该发生，防一手
+
+                found.Add(relative);
+            }
+        }
+        catch
+        {
+            // 读不动就当没找到 —— 界面会显示"没找到模型入口"，比抛异常好
+        }
+
+        // 顶层的排前面（"绒绒.model3.json" 只有一个分隔符都没有），再按名字
+        found.Sort((a, b) =>
+        {
+            var depthA = a.Count(c => c is '\\' or '/');
+            var depthB = b.Count(c => c is '\\' or '/');
+
+            return depthA != depthB
+                ? depthA.CompareTo(depthB)
+                : string.Compare(a, b, StringComparison.CurrentCulture);
+        });
+
+        return found;
+    }
+
+    /// <summary>
     /// 扫描一个模型。
     /// modelDirectory = 模型目录；entryFileName = 入口文件名（如 "绒绒.model3.json"）
     /// 任何异常都不往外抛，一律记进 Problems 并返回能拿到的那部分结果。

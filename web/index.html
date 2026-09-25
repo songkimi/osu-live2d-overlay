@@ -9,32 +9,13 @@
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
   canvas { display: block; width: 100%; height: 100%; }
 
-  /* 诊断条（常驻顶部）：只由页面自己写，不会被 C# 的状态消息覆盖 */
-  #diag {
-    position: fixed; left: 6px; top: 6px; right: 6px;
-    padding: 5px 8px; border-radius: 6px;
-    background: rgba(255, 193, 7, 0.92); color: #221c00;
-    font: 11px/1.45 Consolas, "Microsoft YaHei UI", monospace;
-    white-space: pre-wrap; pointer-events: none; display: none;
-  }
-  #diag.show { display: block; }
-
-  /* 状态行（底部）：显示 C# 发来的消息，例如连击/断连击 */
-  #status {
-    position: fixed; left: 8px; right: 8px; bottom: 8px;
-    padding: 6px 10px; border-radius: 8px;
-    background: rgba(16, 20, 24, 0.72); color: #e8eaed;
-    font: 12px/1.5 "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
-    text-align: center; opacity: 0; transition: opacity .25s; pointer-events: none;
-    white-space: pre-wrap;
-  }
-  #status.show { opacity: 1; }
+  /* ★ 2026-09-23：这里原有两条"画面上的字"——顶部常驻的黄色诊断条 #diag 和
+     底部会淡出的状态行 #status。两条都撤掉了，原因见下面 log()/fail()/fatal() 的说明。
+     现在这个页面**只有一个元素**：画布上的角色。 */
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
-<div id="diag"></div>
-<div id="status"></div>
 
 <script src="vendor/pixi.min.js"></script>
 <script src="vendor/live2dcubismcore.min.js"></script>
@@ -59,18 +40,29 @@
   //            {type:"miss",  expression, params, combo}
   //            {type:"voice", emotion, reason}        ← 语音：和上面几条完全平级、互不依赖
   //            {type:"view",  view:{zoom,offsetY,offsetX}}
-  //            {type:"idle"} {type:"status", text, keep}
+  //            {type:"idle"}
   //   JS → C#：{type:"log", text}  {type:"ready"}  {type:"error", text}
+  //            {type:"fatal", text}   ← 页面画不出东西了（宿主该把它显示给自己那个窗口看）
   // ============================================================
   const canvas = document.getElementById("canvas");
-  const diagEl = document.getElementById("diag");
 
   let app = null;
   let model = null;
-  let marker = null;          // 诊断用绿方块
   let baseScale = 1;
   let idleGroup = "Idle";
   let expressionDurationMs = 1500;
+
+  // 上一次做过"渲染自检"的那个界面。
+  // ★ 2026-09-20：它**只在界面真的切换时做一次**，不是每条 scene 消息都做 —— 见 applyScene 里的说明。
+  let lastDiagScene = null;
+
+  // init 处理完了没有。
+  // ★ 2026-09-23 新增：渲染自检**必须等它之后**才跑。
+  //   起因是真机日志里出现过一次"补丁没生效、表情 0 个"的**假警报** ——
+  //   那一次自检跑在 init 之前（模型文件已经加载、但补丁注册的表情还没进来），
+  //   于是量到的是一份"半初始化"的模型。这种假警报最坑：会把人带去查一个不存在的毛病。
+  let initialized = false;
+
   let rendererName = "?";
 
   // 当前生效的"角色站位"。zoom / offsetX / offsetY 的语义来自全局视图参数（老配置的迁移来源），
@@ -81,52 +73,59 @@
     if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(obj);
   }
 
-  /** 调试模式（C# 侧配置项「调试模式」）：开启后才把开发期信息显示在画面上 */
+  /** 调试模式（C# 侧配置项「调试模式」）：开启后才做那些"只有排查时才值得做"的事（如渲染自检） */
   let debugMode = false;
 
-  /** 面向玩家的提示：一定会显示（连接状态、模型加载失败之类） */
-  function notify(text, ms) { post({ type: "log", text: text }); showStatus(text, false, ms || 3000); }
+  // ------------------------------------------------------------
+  // 页面往外说话的三个口子 —— **一条都不显示在画面上**
+  //
+  // ★ 2026-09-23（用户要求："现在有日志了，可以取消掉悬浮窗的弹幕提示了"）
+  //
+  //   原来这里有四条路：底部会淡出的状态行、顶部常驻的黄色诊断条、模型看不见时画的绿方块，
+  //   以及"写在日志里"这一条。前三条全撤了，只剩日志。为什么：
+  //     ① 悬浮窗是**盖在游戏上**的。玩家在打歌，画面上一行字就是挡视线；
+  //        而"出错时看一眼"这个场景本来就不成立 —— 真出错的时候人都在别处。
+  //     ② 日志信息更全（内存里最近 500 条 + 调试模式下写文件），**能回溯**；
+  //        画面上那一闪，错过了就没了，也没法发给别人看。
+  //     ③ 出了问题该去的地方是设置界面的「日志」和「配置体检」，不是让角色旁边飘一行字。
+  //   注意：**只是不显示**，每条照样 post 给 C# 侧写进日志。
+  //
+  //   唯一的例外是 fatal()：那种情况屏幕上**本来什么都没有**（模型没加载出来），
+  //   所以宿主（设置窗口的预览区）会把这句话显示在自己那个提示行上 ——
+  //   不显示在画面里，而是显示在"用户正看着的那个窗口"里。
+  // ------------------------------------------------------------
 
-  /** 开发期信息：只在调试模式下显示，始终上报给 C# 侧；玩家默认看不到任何提示 */
-  function debugLog(text) { post({ type: "log", text: text }); if (debugMode) showStatus(text, false, 3000); }
+  /** 一般信息（页面干了什么、拿到了什么）：进日志 */
+  function log(text) { post({ type: "log", text: text }); }
 
   /**
-   * 开发期错误：同上（默认不让玩家看到）。
-   * 原因：像"某个表情这一瞬间没播出来"这种情况，多半是游戏结算/断连击的瞬时竞态，
-   * 玩家本来察觉不到，弹出来反而像程序出错 —— 所以只在调试模式下显示。
+   * 开发期错误：进日志，C# 侧记成「页面错误：…」。
+   *
+   * 为什么不显示：像"某个表情这一瞬间没播出来"这种情况，多半是游戏结算/断连击的瞬时竞态，
+   * 玩家本来察觉不到；画面上弹出来反而像程序出错。
    */
-  function fail(text) { post({ type: "error", text: text }); if (debugMode) showStatus("⚠ " + text, false, 6000); }
+  function fail(text) { post({ type: "error", text: text }); }
 
-  /** 诊断条：常驻显示，只有页面自己能改，不会被 C# 的消息顶掉 */
-  let diagTimer = null;
-  function setDiag(text) {
-    diagEl.textContent = text;
-    diagEl.classList.toggle("show", !!text);
-  }
-
-  let statusTimer = null;
-  function showStatus(text, keep, ms) {
-    const el = document.getElementById("status");
-    if (!text) { el.classList.remove("show"); return; }
-    el.textContent = text;
-    el.classList.add("show");
-    if (statusTimer) clearTimeout(statusTimer);
-    if (!keep) statusTimer = setTimeout(() => el.classList.remove("show"), ms || 2500);
-  }
+  /**
+   * 页面**画不出东西**了（模型没加载成功、缺 Cubism Core 之类）。
+   * 与 fail 的区别是"后果"：fail 是某一次没做成，fatal 是这一屏永远是空的。
+   * 所以宿主会把它显示给自己那个窗口（悬浮窗没地方显示，就只进日志）。
+   */
+  function fatal(text) { post({ type: "fatal", text: text }); }
 
   // ---------------- 语音（和表情完全解耦：表情管"演什么"，语音管"说什么"） ----------------
 
   let voiceEnabled = false;
-  let voiceProblem = "";                       // 配错了的原因，只在诊断条里给开发者看
+  let voiceProblem = "";                       // 配错了的原因（进日志，不在画面上说）
   let voiceVolume = 0.8;
   let voiceMinIntervalMs = 300;
   const voiceMoods = {};                       // 情绪名 → { pool:[地址…], bag:[洗好的袋] }
   const voiceAudios = {};                      // 地址 → 预加载好的 <audio>
   let voiceLastUrl = null;                     // 上一句播的是哪个（用来避免连着重复）
-  let voiceLastDesc = "";                      // 诊断条上显示"上一句"
+  let voiceLastDesc = "";                      // 上一句的描述（进日志）
   let voiceLastAt = 0;
   let voiceCurrent = null;
-  let voiceFileProblem = "";                   // 有文件取不到时的说明（真问题，会显示出来）
+  let voiceFileProblem = "";                   // 有文件取不到时的说明（真问题，进日志）
   let voiceFailNotified = false;                // 第一次播放失败已提示过（避免刷屏）
 
   /**
@@ -140,7 +139,7 @@
 
     if (!voiceEnabled) {
       voiceLastDesc = voiceProblem ? "未启用（" + voiceProblem + "）" : "未启用";
-      debugLog("语音未启用" + (voiceProblem ? "：" + voiceProblem : ""));
+      log("语音未启用" + (voiceProblem ? "：" + voiceProblem : ""));
       return;
     }
 
@@ -160,7 +159,7 @@
     });
 
     voiceLastDesc = "还没播过";
-    debugLog("语音就绪：" + Object.keys(voiceMoods)
+    log("语音就绪：" + Object.keys(voiceMoods)
       .map(function (k) { return k + "(" + voiceMoods[k].pool.length + ")"; })
       .join("、"));
 
@@ -176,10 +175,9 @@
                       .catch(function () { return voiceFileName(u) + "(取不到)"; });
     })).then(function (bad) {
       const failed = bad.filter(Boolean);
-      debugLog("语音文件检查：" + (all.length - failed.length) + "/" + all.length + " 可取到" +
+      log("语音文件检查：" + (all.length - failed.length) + "/" + all.length + " 可取到" +
                (failed.length ? "；失败：" + failed.join("、") : ""));
       voiceFileProblem = failed.length ? ("有 " + failed.length + " 个文件取不到：" + failed.join("、")) : "";
-      updateDiag();
     });
   }
 
@@ -220,11 +218,11 @@
     if (!voiceEnabled) return;
 
     const url = pickVoiceUrl(emotion);
-    if (!url) { debugLog("没有这类情绪的语音：" + emotion); return; }
+    if (!url) { log("没有这类情绪的语音：" + emotion); return; }
 
     const now = performance.now();
     if (now - voiceLastAt < voiceMinIntervalMs) {
-      debugLog("间隔太短，跳过一句：" + emotion);
+      log("间隔太短，跳过一句：" + emotion);
       return;
     }
     voiceLastAt = now;
@@ -245,7 +243,7 @@
     const p = audio.play();
     if (p && p.catch) {
       p.then(function () {
-         debugLog("语音播放：" + voiceLastDesc + (reason ? "（" + reason + "）" : ""));
+         log("语音播放：" + voiceLastDesc + (reason ? "（" + reason + "）" : ""));
          startMouth(audio);          // 一边出声一边张嘴
        })
        .catch(function (err) {
@@ -253,25 +251,24 @@
          // 插件已经用 --autoplay-policy=no-user-gesture-required 处理过了，真出现就是环境问题。
          const detail = "语音没能播放：" + err.name + " —— " + voiceLastDesc +
                         "（浏览器拒绝了自动播放）";
-         // 整个语音功能不出声属于"不修就没法用"，所以第一次一定提示；
-         // 之后归入开发期信息，只在调试模式下显示，避免一直刷屏。
+         // 只报**一次**：这句错误是"每说一句都失败"，全记下来会把日志里别的信息挤掉
+         //（内存里只留最近 500 条 —— 刷屏就等于把出问题那一刻的现场冲掉了）。
          if (!voiceFailNotified) {
            voiceFailNotified = true;
-           notify(detail + "｜之后不再重复提示", 6000);
+           fail(detail + "｜之后不再重复记");
          }
-         fail(detail);
        });
     }
   }
 
-  /** 诊断条里的语音那行 */
+  /** 语音那一行（进日志）—— 整行用「｜」串起来，不留换行 */
   function voiceInfo() {
     if (!voiceEnabled) return voiceLastDesc || "未启用";
     const parts = Object.keys(voiceMoods).map(function (k) {
       return k + "(" + voiceMoods[k].pool.length + ")";
     });
     return parts.join("、") + "｜上一句 " + voiceLastDesc +
-           (voiceFileProblem ? "\n  ⚠ " + voiceFileProblem : "");
+           (voiceFileProblem ? "｜⚠ " + voiceFileProblem : "");
   }
 
   // ---------------- 口型（说话时张嘴） ----------------
@@ -318,30 +315,30 @@
   /** 找口型参数：配置里指定的优先，否则按常见命名挨个问 */
   function setupMouth(cfg) {
     mouthEnabled = !!(cfg && cfg.enabled);
-    if (!mouthEnabled) { debugLog("口型未启用"); return; }
+    if (!mouthEnabled) { log("口型未启用"); return; }
 
     mouthStrength = typeof cfg.strength === "number" ? cfg.strength : 1;
 
     const cm = coreModel();
-    if (!cm) { mouthEnabled = false; debugLog("拿不到模型，口型不启用"); return; }
+    if (!cm) { mouthEnabled = false; log("拿不到模型，口型不启用"); return; }
 
     const wanted = (cfg.parameter || "").trim();
 
     if (wanted) {
       mouthParamId = wanted;
       if (!parameterExists(cm, wanted))
-        debugLog("配置的口型参数「" + wanted + "」不在模型里，设了也不会有反应 —— 检查有没有打错");
+        log("配置的口型参数「" + wanted + "」不在模型里，设了也不会有反应 —— 检查有没有打错");
     } else {
       mouthParamId = MOUTH_PARAM_CANDIDATES.find(function (id) { return parameterExists(cm, id); }) || "";
       if (!mouthParamId) {
         // 这个模型就是没有口型参数 → 安静地不做，别打扰（可在配置里手动指定「口型.参数」）
         mouthEnabled = false;
-        debugLog("模型里没有找到口型参数，说话时不会张嘴（该模型共 " + parameterCount(cm) + " 个参数）");
+        log("模型里没有找到口型参数，说话时不会张嘴（该模型共 " + parameterCount(cm) + " 个参数）");
         return;
       }
     }
 
-    debugLog("口型参数 = " + mouthParamId + "，幅度 " + mouthStrength);
+    log("口型参数 = " + mouthParamId + "，幅度 " + mouthStrength);
   }
 
   /** 开始"说话"：按音频时长决定说到什么时候 */
@@ -383,7 +380,7 @@
     //   本来就有的嘴部动画一路按成 0，角色会显得嘴僵住。
     if (now > mouthUntil && mouthValue < 0.02) {
       mouthActive = false;
-      debugLog("口型结束，参数交还给动作");
+      log("口型结束，参数交还给动作");
     }
   }
 
@@ -413,19 +410,20 @@
             mouthTick();
           });
           if (msg.persistent) setPersistent(msg.persistent);
+          initialized = true;      // 自检要等这一句之后才跑（见 applyScene 里的说明）
         } catch (e) {
-          fail("模型加载失败：" + e.message);
-          setDiag("加载失败：" + e.message);     // 加载失败是真问题 → 诊断条常驻显示
+          // 模型没加载出来 = 这一屏永远是空的 → fatal：宿主会把这句话显示在自己窗口的提示行上
+          fatal("模型加载失败：" + e.message);
         }
         break;
 
       case "combo":
-        debugLog("收到 combo 消息：" + msg.expression);
+        log("收到 combo 消息：" + msg.expression);
         playInstant(msg.expression, msg.params, expressionDurationMs);
         break;
 
       case "miss":
-        debugLog("收到 miss 消息：" + msg.expression);
+        log("收到 miss 消息：" + msg.expression);
         playInstant(msg.expression, msg.params, expressionDurationMs);
         break;
 
@@ -442,12 +440,17 @@
 
       // 界面切换：MainMenu / SongSelect / Playing / Result / Unknown
       //
-      // 服务运行时每切一次界面就发一条，带三样东西：
-      //   scene     —— 现在在哪（只记日志，表现看下面两项）
-      //   show      —— 这个界面要不要显示角色（配置里"启用 + 配了模型"才算数）
+      // 服务运行时每切一次界面就发一条，带四样东西：
+      //   scene     —— 现在在哪（只记日志，表现看下面三项）
+      //   show      —— 这个界面要不要显示角色（配置里"启用"才算数）
+      //   opacity   —— 角色该多透明（0 = 看不见）。**和 show 不是一回事**：
+      //                show=false 是"这个界面不显示角色"，
+      //                opacity=0 是"角色还在、位置也没动，只是暂时看不见"
+      //                （谱面加载期间就是这么用的，歌一开始就恢复成 1）
       //   character —— 角色站位（相对画布的比例位置 + 缩放），不显示时是 null
       case "scene":
-        debugLog("界面 → " + msg.scene + (msg.show === false ? "（不显示角色）" : "（显示角色）"));
+        log("界面 → " + msg.scene + (msg.show === false ? "（不显示角色）" : "（显示角色）") +
+                 (typeof msg.opacity === "number" ? "，透明度 " + msg.opacity : ""));
         applyScene(msg);
         break;
 
@@ -455,13 +458,21 @@
       case "motion":
         playMotion(msg.action);
         break;
+
+      // 试播（设置界面「行为」页点清单里的一行）→ 走**瞬时层**，播完自己回落。
+      // ★ 2026-09-23 用户拍板："动作和表情都只是暂时播放" ——
+      //   所以这里和 combo/miss 走完全同一条路，没有"挂住不放"的那种模式。
+      case "expression":
+        log("试播表情 → " + msg.expression);
+        playInstant(msg.expression, msg.params, expressionDurationMs);
+        break;
       // 语音：只认情绪，不认表情 —— 这就是"语音与动作解耦"在协议上的样子
       case "voice":
         playVoice(msg.emotion, msg.reason);
         break;
 
       case "view":
-        if (msg.view) { Object.assign(view, msg.view); applyView(); updateDiag(); }
+        if (msg.view) { Object.assign(view, msg.view); applyView(); }
         break;
 
       case "idle":
@@ -473,9 +484,7 @@
         if (model && typeof msg.x === "number") model.focus(msg.x, msg.y);
         break;
 
-      case "status":
-        showStatus(msg.text, msg.keep === true);
-        break;
+      // ★ 2026-09-23：`case "status"`（C# 让页面显示一行提示）撤掉了 —— 见 log() 上面那段说明。
     }
   });
 
@@ -489,23 +498,29 @@
   }
 
   /** 等到画布有真实尺寸再开始（初始化时窗口可能还没布局完成，尺寸会是 0） */
+  /**
+   * 等到画布有真实尺寸再开始（初始化时窗口可能还没布局完成，尺寸会是 0）。
+   * 等的过程**不往画面上写东西**（以前会写"等待画布尺寸 …"）：等到了就什么都不用说，
+   * 一直等不到才报一次 —— 报的是结果，不是过程。
+   */
   async function waitForCanvasSize() {
     for (let i = 0; i < 50; i++) {                 // 最多等 5 秒
       const s = readCanvasSize();
       if (s.w > 50 && s.h > 50) return s;
-      setDiag("等待画布尺寸 …（当前 " + s.w + "×" + s.h + "）");
       await new Promise(r => setTimeout(r, 100));
     }
-    return readCanvasSize();
+
+    const s = readCanvasSize();
+    fail("画布等了 5 秒还是 " + s.w + "×" + s.h + " —— 按这个尺寸继续（角色可能显示不全）");
+    return s;
   }
 
   async function loadModel(url) {
     // Cubism Core 不随仓库分发（授权），本地缺文件时靠上面那层 CDN 兜底。
     // 两边都没取到的话，这里给一句能看懂的提示，而不是让它静静地加载失败。
     if (!window.Live2DCubismCore) {
-      fail("缺少 Live2D Cubism Core：请把 live2dcubismcore.min.js 放到 web/vendor/ 下" +
-           "（本地和官方 CDN 都没取到）");
-      setDiag("缺少 live2dcubismcore.min.js —— 见 README「需要你自己准备的东西」");
+      fatal("缺少 Live2D Cubism Core：请把 live2dcubismcore.min.js 放到 web/vendor/ 下" +
+            "（本地和官方 CDN 都没取到）—— 见 README「需要你自己准备的东西」");
       return;
     }
 
@@ -528,7 +543,6 @@
     recomputeBaseScale();
     applyView();
     playIdle();
-    updateDiag();
 
     // 尺寸变化时自动纠正
     new ResizeObserver(() => {
@@ -536,7 +550,6 @@
       const s = readCanvasSize();
       app.renderer.resize(s.w, s.h);
       applyView();
-      updateDiag();
     }).observe(document.body);
 
     // 兜底自愈：布局尺寸晚一点才稳定时，逐帧检查画布尺寸，变了就重算一次
@@ -546,13 +559,11 @@
       if (app.renderer.width !== lastW || app.renderer.height !== lastH) {
         lastW = app.renderer.width; lastH = app.renderer.height;
         applyView();
-        updateDiag();
         stableFrames = 0;
       } else if (stableFrames < 3) {
         // 前几帧再补一次，确保首帧尺寸就是对的
         stableFrames++;
         applyView();
-        updateDiag();
       }
     });
 
@@ -593,9 +604,16 @@
     }
   }
 
-  /** 诊断条内容：出问题时这一屏文字就能定位到具体是哪一层的问题 */
-  function updateDiag() {
-    if (!app || !model) return;
+  /**
+   * 诊断文本：出问题时这一行字就能定位到具体是哪一层的问题。
+   *
+   * ★ 2026-09-23：它原来自带一套显示（顶部黄条 + 模型看不见时画个绿方块 = "看得到它 → 渲染正常"）。
+   *   显示撤了，**内容留着** —— 现在由渲染自检把它写进日志（见 applyScene）。
+   *   绿方块那套说法的替代品更直接：`renderSelfCheck()` 会数**非透明像素**，
+   *   "有没有画出来"这个问题它用数字回答，不用再靠"人眼看方块"。
+   */
+  function diagnostics() {
+    if (!app || !model) return null;
 
     const m = modelSize();
     const info = modelPatchInfo();
@@ -614,44 +632,24 @@
     const bottom = Math.round(model.y);
     const visible = bottom > 0 && top < app.renderer.height && right > 0 && left < app.renderer.width;
 
-    const text =
+    // 多行会占满日志页好几行，所以统一用「｜」串成一整行 —— 一条日志 = 一次判断的全部依据
+    let text =
       "画布 " + app.renderer.width + "×" + app.renderer.height + "｜渲染器 " + rendererName +
       "｜模型(原始) " + Math.round(m.w) + "×" + Math.round(m.h) +
-      "\n缩放 " + view.zoom.toFixed(2) + "（基准 " + baseScale.toFixed(4) + "）｜上下 " + view.offsetY.toFixed(2) +
+      "｜缩放 " + view.zoom.toFixed(2) + "（基准 " + baseScale.toFixed(4) + "）｜上下 " + view.offsetY.toFixed(2) +
       "｜角度 " + (view.angle || 0).toFixed(0) + "°" +
       "｜模型范围 (" + left + "," + top + ")→(" + right + "," + bottom + ")｜在画面内 = " + visible +
-      "\n补丁检查：动作组 [" + info.groups.join("、") + "]｜表情 " + info.defs.length + " 个" +
+      "｜补丁检查：动作组 [" + info.groups.join("、") + "]｜表情 " + info.defs.length + " 个" +
       (info.defs.length ? "：" + info.defs.slice(0, 4).join("、") + (info.defs.length > 4 ? "…" : "")
                         : " ← ⚠ 补丁没生效（应为 17 个）") +
-      "\n语音：" + voiceInfo() +
-      "\nWebGL：" + webglInfo();
+      "｜语音：" + voiceInfo() +
+      "｜WebGL：" + webglInfo();
 
-    // 模型看不见、或者补丁没生效时，诊断条一直留着；一切正常时 10 秒后自动消失
-    if (!visible) {
-      drawMarker();
-      setDiag(text + "\n左上角画了一个绿方块：看得到它 → 渲染正常、是模型位置问题；看不到 → 渲染层有问题");
-    } else if (info.defs.length === 0) {
-      removeMarker();
-      setDiag(text + "\n补丁没生效：模型里没有注册任何表情（虚拟主机映射或请求拦截有问题）");
-    } else {
-      removeMarker();
-      setDiag(text);
-      if (diagTimer) clearTimeout(diagTimer);
-      diagTimer = setTimeout(() => setDiag(""), 10000);
-    }
-  }
+    // 把"所以呢"也写在同一行里 —— 日志里最该看清的就是结论
+    if (!visible) text += "｜⚠ 模型不在画面内（站位参数或窗口尺寸？）";
+    else if (info.defs.length === 0) text += "｜⚠ 补丁没生效（虚拟主机映射或请求拦截有问题）";
 
-  function drawMarker() {
-    if (marker || !app) return;
-    marker = new PIXI.Graphics();
-    marker.beginFill(0x00ff00, 0.9).drawRect(20, 20, 80, 80).endFill();
-    app.stage.addChild(marker);
-  }
-
-  function removeMarker() {
-    if (!marker || !app) return;
-    app.stage.removeChild(marker);
-    marker = null;
+    return text;
   }
 
   // ---------------- 视图（位置与大小由配置控制） ----------------
@@ -759,7 +757,20 @@
     if (!model || !app) return;
 
     const show = msg.show !== false;      // 没带这个字段 = 显示（兼容老消息）
+
+    // 透明度：**由 C# 那边算好送过来**（0 = 完全看不见，1 = 完全看得见）。
+    // 它和 show 是两件事，别混：
+    //   show=false   —— 这个界面压根不显示角色（没启用 / 认不出的界面）
+    //   opacity=0    —— 角色**还在**，只是暂时看不见（谱面加载期间就是这么用的）
+    // 后者不动位置、不卸载模型，歌一开始 C# 把 opacity 发回 1 就恢复 ——
+    // 所以加载那两秒人物既不会乱跳，也不是"消失了像是坏了"。
+    // 没带这个字段 = 按 show 推（兼容老消息）。
+    const opacity = (typeof msg.opacity === "number")
+      ? msg.opacity
+      : (show ? 1 : 0);
+
     model.visible = show;
+    model.alpha = opacity;
 
     if (show && msg.character) {
       view.zoom = msg.character.scale;
@@ -770,36 +781,52 @@
     }
 
     // 排查用：应用完之后到底"是什么状态"。看不见角色时，这一行能区分
-    //   visible=false（消息要它藏）／scale=NaN（缩放算坏了）／位置跑到画布外（摆位错了）
+    //   visible=false（消息要它藏）／opacity=0（透明的，加载期就是这种）／
+    //   scale=NaN（缩放算坏了）／位置跑到画布外（摆位错了）
     const m0 = modelSize();
-    debugLog("场景应用：" + msg.scene + " show=" + show +
+    log("场景应用：" + msg.scene + " show=" + show + " opacity=" + opacity +
              " character=" + JSON.stringify(msg.character) +
              "｜visible=" + model.visible +
+             " alpha=" + model.alpha +
              " zoom=" + view.zoom +
              " scale=" + model.scale.x +
              " 位置=(" + Math.round(model.x) + "," + Math.round(model.y) + ")" +
              " 画布=" + app.renderer.width + "x" + app.renderer.height +
              " 模型原始=" + Math.round(m0.w) + "x" + Math.round(m0.h));
 
-    updateDiag();
-
     // 排查用：立刻采一次，2 秒后再采一次。
     // 贴图是异步上传到 GPU 的，"刚切过去"和"过两秒"这两组数据一对比，
     // 就能区分是"模型真的没画出来"还是"还没加载完" —— 这两者的修法完全不同。
-    // 渲染自检与画面快照**只在调试模式下跑**：
-    //   · 像素采样要把 3200 万像素走一遍，玩家版每次切界面都做纯属浪费
-    //   · 快照还会往磁盘写 PNG，不该出现在玩家机器上
-    // 留着它们是因为："角色看不见"这类问题，这是唯一能自查的手段 ——
-    // 一张快照就能分清"没画出来"和"画了但没显示到屏幕上"。
-    if (debugMode) {
-      post({ type: "log", text: "渲染自检（" + msg.scene + "，立刻）：" + renderSelfCheck() });
+    // 渲染自检**只在调试模式下跑**（像素采样要把整张画布走一遍，玩家版每次切界面都做纯属浪费）。
+    //
+    // ★ 2026-09-21：**画面快照（把画布导成 PNG 发回 C#）整个撤掉了。**
+    //   它当初是排查"角色看不见"的利器（一张图就能分清"没画出来"和"画了但没上屏"），
+    //   而那个问题已经查清并修掉了。留着的代价反而实在：
+    //   一次编码约 270KB、要往日志/磁盘写，还极易把帧率拖垮（见下）。
+    //   判断"画出来没有"现在靠 `renderSelfCheck()` 里那个**数非透明像素**的那一行 ——
+    //   同一件事、不写文件、只回一行字。
+    //
+    // ★★ 2026-09-20 修：**只在界面真的切换时做，不是每条 scene 消息都做。**
+    //   以前这里是"每条 scene 消息都跑"，而**设置界面的预览区每拖一下滑块就发一条 scene**
+    //   → 每拖一下做一次全画布像素扫描（3200 万像素）+ 一次 PNG 编码，
+    //   帧率直接掉到 **5 帧**，日志也被 base64 图片撑到 **34MB**（用户真机实测）。
+    //   而这件事要回答的问题本来就是"**刚切过去那一下**角色画出来了没有" ——
+    //   同一个界面里改站位、改尺寸，根本不需要再自检一遍。
+    if (debugMode && initialized && msg.scene !== lastDiagScene) {
+      lastDiagScene = msg.scene;
+
+      // 两行、回答两个不同的问题：
+      //   ① "画出来没有" → 数非透明像素（`renderSelfCheck`）
+      //   ② "参数是什么" → 尺寸/站位/补丁/语音/WebGL（`diagnostics`，原诊断条那一套）
+      log("渲染自检（" + msg.scene + "，立刻）：" + renderSelfCheck());
+      const d = diagnostics();
+      if (d) log("渲染参数（" + msg.scene + "）：" + d);
+
       setTimeout(function () {
         try {
-          post({ type: "log", text: "渲染自检（" + msg.scene + "，2 秒后）：" + renderSelfCheck() });
-          const shot = app.renderer.extract.canvas(app.stage);
-          post({ type: "snapshot", dataUrl: shot.toDataURL("image/png") });
+          log("渲染自检（" + msg.scene + "，2 秒后）：" + renderSelfCheck());
         } catch (e) {
-          post({ type: "log", text: "自检/快照失败：" + e.message });
+          log("自检失败：" + e.message);
         }
       }, 2000);
     }
@@ -811,7 +838,7 @@
     // 配置里没填待机动作（idle 为空）就别调了 —— 否则每次表情结束都会失败一次，
     // 对"只想先跑起来"的人来说全是噪音。
     if (!idleGroup) return;
-    try { model.motion(idleGroup); debugLog("待机动作（循环）"); }
+    try { model.motion(idleGroup); log("待机动作（循环）"); }
     catch (e) { fail("待机动作失败：" + e.message); }
   }
 
@@ -907,7 +934,7 @@
       if (u.kind === "persistent" && u.target === 1 && wanted.indexOf(u.id) < 0) u.target = 0;
     }
     for (const it of items) activate("persistent", it.id, it.params, 0);
-    debugLog("常驻层 → " + (wanted.length ? wanted.join("、") : "（空）"));
+    log("常驻层 → " + (wanted.length ? wanted.join("、") : "（空）"));
   }
 
   /** 常态层：区间变了就换人（旧的淡出、新的淡入） */
@@ -916,7 +943,7 @@
     if (isAlive("steady", id)) return;             // 还是同一个区间 → 什么都不做
     retire("steady", id);
     activate("steady", id, params, 0);
-    debugLog("常态层 → " + id);
+    log("常态层 → " + id);
   }
 
   /**
@@ -930,7 +957,7 @@
     const again = isAlive("instant", id);
     retire("instant", id);
     activate("instant", id, params, ttlMs);
-    if (!again) debugLog("瞬时层 → " + id);
+    if (!again) log("瞬时层 → " + id);
   }
 
   /**
@@ -996,7 +1023,7 @@
     if (!model || !name) return;
     try {
       model.motion(name);      // 随机挑一个变体是库自带的行为，我们不用管
-      debugLog("播放动作：" + name);
+      log("播放动作：" + name);
     } catch (e) {
       fail("动作播放失败：" + name + " → " + e.message);
     }
@@ -1008,7 +1035,6 @@
     app.renderer.resize(s.w, s.h);
     recomputeBaseScale();
     applyView();
-    updateDiag();
   });
 </script>
 </body>

@@ -1,0 +1,73 @@
+<!-- ============================================================
+     PreviewPane.xaml —— 共享的**角色预览区**（设置界面里那一块）
+
+     【它是什么】在设置窗口里再渲染一份 Live2D，外面套一个"悬浮窗边框"。
+     定稿 §3.1 说预览区只有两个用途：
+       ① 看懂"这个表情 / 动作在角色上是什么样"    → 行为、形象
+       ② 确认"角色在悬浮窗里是什么姿态"          → 联动与窗口
+     而 §8.8 第 1 条是硬要求：**必须画出悬浮窗的边框线** ——
+     用户原话"没有这条线，用户不知道自己在调什么范围"。
+
+     【三件刻意的事】
+      ① **懒加载**：不是一开设置界面就起一只浏览器。启一次约一秒、
+         还有一份内存，只有真正露出来（用户切到要用预览的那一页）才建。
+         **切走时释放**（★ 2026-09-23 改）：原来是"挂起"（`TrySuspendAsync`），
+         但导航是**每次新建页面**、旧页面整块丢掉的，于是每切一次页就多留下一只
+         活着的 WebView2 —— 攒到十几只之后开始掉帧（真机日志实测）。
+         现在规矩只有一条：**预览区跟着页面生死**，见 `Shutdown()`。
+      ② **不播放语音**：预览是"看"的。init 里 voice 传 null ——
+         不然用户一边配一边被语音糊一脸（而且这个窗口是穿透的，
+         浏览器那边会因为"没有用户手势"直接拒绝播放，表现为时响时不响）。
+      ③ **边框就是 WebView2 的边界**：窗口多大，那块渲染区就多大（按比例缩）。
+         这样"人物在悬浮窗里就是这么展示的"是真话，而不是拿一块大画布糊弄。
+
+     【★ 曾经有过"1:1 显示"模式，2026-09-20 删了】
+       它想表达"看得清细节"。但它**物理上做不到**：
+       WebView2 是**原生窗口**，WPF 的 `ClipToBounds` **管不住它** ——
+       一旦渲染区超出这块面板，它会**直接画在所有 WPF 元素之上**，
+       把右边的保存栏、连自己那条边框线一起盖住（用户实测）。
+       真要 1:1 + 平移，得让页面里那套 JS 自己平移，那是另一件事。
+       而"适配显示"本来就**只缩小不放大**（见 `Logic/PreviewScale.cs`），
+       边框永远不会溢出 —— 一个模式既够用又不出事。
+
+     【它的数据从哪来】由外面**喂**进来（`EnsureStartedAsync(config, debugMode)`）——
+     它**不认识 `ConfigStore`**："换了配置要不要重建"退化成一次引用比较。
+     让预览反过来订阅全局状态，就多了一条"谁先谁后"的路要走。
+     ============================================================ -->
+<UserControl x:Class="OsuLive2dOverlay.PreviewPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+             FontFamily="{DynamicResource FontFamily.UI}"
+             FontSize="{DynamicResource FontSize.Body}"
+             Foreground="{DynamicResource Brush.TextPrimary}"
+             SizeChanged="OnPaneSizeChanged"
+             Unloaded="OnUnloaded">
+
+    <Grid>
+        <!-- 渲染区：WebView2 就放在边框里，边框多大它就多大 -->
+        <Grid x:Name="FrameHost" ClipToBounds="True" Margin="12,44,12,12">
+            <Border x:Name="Frame"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    BorderBrush="{DynamicResource Brush.Primary}"
+                    BorderThickness="1"
+                    Background="Transparent">
+                <wv2:WebView2 x:Name="Web" DefaultBackgroundColor="Transparent" />
+            </Border>
+        </Grid>
+
+        <!-- 顶栏：这一档多大 / 缩了多少 —— **没有模式切换** -->
+        <TextBlock x:Name="FrameLabel" VerticalAlignment="Top"
+                   Margin="12,12,12,0"
+                   Foreground="{DynamicResource Brush.TextSecondary}"
+                   Style="{DynamicResource Text.Caption}" />
+
+        <!-- 状态层：还没起来 / 起来了正在加载 / 失败了 -->
+        <TextBlock x:Name="Hint"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="320"
+                   Foreground="{DynamicResource Brush.TextSecondary}"
+                   Style="{DynamicResource Text.Caption}"
+                   Text="预览还没启动。" />
+    </Grid>
+</UserControl>
