@@ -1,14 +1,19 @@
 <!-- ============================================================
      UpdateView.xaml —— 「应用 → 更新」页
 
-     【这一页现在只有一个置灰的按钮，是刻意的】
-       用户 2026-09-24："更新这页是我没接触过的技术栈，我想先放着，按钮可以放一个。"
-       而"检查更新"要联网（HTTP 请求 + 版本比较 + 下载/跳转），是还没学的那部分。
+     【这一页和别的页有三处不同】（VM 那边也写了，这里只说界面上的后果）
+       ① 不存配置 —— 所以**没有底部保存栏**，也没有「● 未保存」。
+       ② 有异步 —— 点一下要等网络。按钮的"检查中变灰"是 [RelayCommand] 白送的
+          （AsyncRelayCommand 执行期间 CanExecute 自动为 false），这里不用管；
+          界面只需要**用一句话告诉用户"在查了"** —— 那就是 StatusText。
+       ③ 结果有四种：还没查 / 已是最新 / 有新版本 / 查不到 —— 全都由 StatusText 表达。
 
-     **不摆一个"点了没反应"的按钮**（定稿 §1.2 明令禁止的东西）：
-     按钮置灰、并在下面写清为什么（§1.1：只灰不解释的控件在用户眼里就是"这软件有毛病"）。
+     【「最新」那一行和「打开发布页」按钮】
+       它们**只在查到有新版本时才出现**（绑 HasUpdate）。
+       为什么用"出现/消失"而不是"置灰"：置灰的按钮在用户眼里就是"这软件有毛病"
+       （定稿 §1.1）—— 而这里没必要让他看见一个此刻无意义的按钮。
 
-     等联网那块学完，这里就是：启动时检查更新（开关）+ 手动检查（按钮）+ 更新日志。
+     骨架与别页一致（SettingIndex + Toast + 键值行版式）。
      ============================================================ -->
 <UserControl x:Class="OsuLive2dOverlay.UpdateView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -18,33 +23,80 @@
              Foreground="{DynamicResource Brush.TextPrimary}"
              Loaded="OnLoaded">
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
-        <StackPanel Margin="20">
+    <UserControl.Resources>
+        <!-- bool → Visibility。WPF 自带这个转换器，不用自己写（和 HealthCheckView 一个做法）。 -->
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
 
-            <TextBlock Text="更新" Style="{DynamicResource Text.PageTitle}" />
-            <TextBlock Text="检查有没有新版本。"
-                       TextWrapping="Wrap"
-                       Style="{DynamicResource Text.Caption}" Margin="0,6,0,16" />
+    <Grid>
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+            <StackPanel Margin="20">
 
-            <Border Style="{DynamicResource Card}">
-                <StackPanel>
-                    <TextBlock Text="检查更新" Style="{DynamicResource Text.CardTitle}" />
+                <TextBlock Text="更新" Style="{DynamicResource Text.PageTitle}" />
+                <TextBlock Text="" Margin="0,0,0,12" />
 
-                    <Button Content="检查更新" Padding="18,6" HorizontalAlignment="Left"
-                            Margin="0,12,0,0"
-                            IsEnabled="False" />
+                <Border Style="{DynamicResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="版本" Style="{DynamicResource Text.CardTitle}" />
 
-                    <TextBlock Text="还没做 —— 检查更新要联网，这块技术我还在学。所以按钮先置灰，不做成「点了没反应」。"
-                               TextWrapping="Wrap"
-                               Style="{DynamicResource Text.Caption}"
-                               Margin="0,10,0,0" />
+                        <!-- 当前版本 -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="当前" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <TextBlock Grid.Column="1" Text="{Binding CurrentVersionText}"
+                                       VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Body}" />
+                        </Grid>
 
-                    <TextBlock Text="想手动看版本：本页顶部没有，去「应用 → 关于」页，那儿显示当前版本号。"
-                               TextWrapping="Wrap"
-                               Style="{DynamicResource Text.Caption}"
-                               Margin="0,10,0,0" />
-                </StackPanel>
-            </Border>
-        </StackPanel>
-    </ScrollViewer>
+                        <!-- 最新版本：只在"查到有新版本"时出现 -->
+                        <Grid Margin="0,12,0,0"
+                              Visibility="{Binding HasUpdate, Converter={StaticResource BoolToVis}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="最新" VerticalAlignment="Center"
+                                       Style="{DynamicResource Text.Label}" />
+                            <TextBlock Grid.Column="1" Text="{Binding LatestVersionText}"
+                                       VerticalAlignment="Center"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource Brush.Success}"
+                                       Style="{DynamicResource Text.Body}" />
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button Content="检查更新" Padding="18,6"
+                                    Command="{Binding CheckCommand}" />
+                            <Button Content="打开发布页" Padding="18,6" Margin="8,0,0,0"
+                                    Command="{Binding OpenReleasePageCommand}"
+                                    Visibility="{Binding HasUpdate, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+
+                        <Border BorderBrush="{DynamicResource Brush.Divider}" BorderThickness="0,1,0,0"
+                                Margin="0,14,0,10" />
+                        <TextBlock Text="{Binding StatusText}"
+                                   TextWrapping="Wrap"
+                                   Style="{DynamicResource Text.Caption}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Toast：查不到、打不开浏览器这类回执 -->
+        <Border x:Name="ToastPanel"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,24"
+                Background="{DynamicResource Brush.TextPrimary}"
+                CornerRadius="6" Padding="16,10"
+                MouseLeftButtonUp="OnToastClick">
+            <TextBlock x:Name="ToastText"
+                       Foreground="{DynamicResource Brush.Surface}"
+                       Style="{DynamicResource Text.Body}" />
+        </Border>
+    </Grid>
 </UserControl>

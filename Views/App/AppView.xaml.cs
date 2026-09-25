@@ -15,7 +15,7 @@ public partial class AppView : UserControl
         InitializeComponent();
 
         GeneralTab.Content = new GeneralView(new GeneralViewModel(store));
-        UpdateTab.Content = new UpdateView();          // 占位：只有一个置灰按钮（见那一页的说明）
+        UpdateTab.Content = new UpdateView(new UpdateViewModel(store));   // ★ 接上：检查更新（联网）
         AboutTab.Content = new AboutView(new AboutViewModel(store));
     }
 }

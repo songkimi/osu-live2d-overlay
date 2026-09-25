@@ -22,7 +22,7 @@
     <!-- 版本号：**从 0.x 起步**（1.0 才代表"承诺向后兼容"；在那之前
          配置文件格式与界面都可能变）。「应用 → 关于」页显示的就是它 ——
          从程序集读，不写死在界面里，免得界面写的版本和打包出来的对不上。 -->
-    <Version>0.7.0</Version>
+    <Version>0.8.0</Version>
 
     <!-- 程序图标（.exe 自己那个）：Windows 只认 .ico，png 不行 ——
          所以从 olo.png 生成了 Resources\olo.ico -->
@@ -75,6 +75,14 @@
     </None>
   </ItemGroup>
 
+	<!-- Release：先全包含，再移除侵权js -->
+	<ItemGroup Condition="'$(Configuration)' == 'Release'">
+		<None Update="web\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Remove="web\vendor\live2dcubismcore.min.js" />
+	</ItemGroup>
+
   <!-- 两个配置文件模板都只在输出目录**还没有**的时候复制一份。
        不能像 web\ 那样用 PreserveNewest：输出目录那两份装的是**运行期状态**
        （界面感知、拖出来的窗口位置、各界面角度、用户调的字体字号都写在里面，
@@ -98,10 +106,8 @@
 
        settings.json 没有改名问题，照旧用 DestinationFolder。 -->
   <Target Name="CopyConfigTemplates" AfterTargets="Build">
-    <Copy SourceFiles="config.json" DestinationFiles="$(OutDir)profiles\默认.json"
-          Condition="!Exists('$(OutDir)profiles\默认.json') AND !Exists('$(OutDir)config.json')" />
-    <Copy SourceFiles="settings.json" DestinationFolder="$(OutDir)"
-          Condition="!Exists('$(OutDir)settings.json')" />
+    <Copy SourceFiles="config.json" DestinationFiles="$(OutDir)profiles\默认.json" Condition="!Exists('$(OutDir)profiles\默认.json') AND !Exists('$(OutDir)config.json')" />
+    <Copy SourceFiles="settings.json" DestinationFolder="$(OutDir)" Condition="!Exists('$(OutDir)settings.json')" />
   </Target>
 
 </Project>
