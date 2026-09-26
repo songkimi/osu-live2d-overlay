@@ -647,6 +647,21 @@ public partial class OverlayWindow : Window
 
                 _tracker.Reset();
             }
+            if (scene.Value == GameScene.Result)
+            {
+                var hit = ResultReaction.Pick(_config.ResultRanges, snapshot.Accuracy);
+                if (hit is not null)
+                {
+                    var action = TriggerResolver.ResolveResult(hit.Reaction, $"结算 {snapshot.Accuracy:0.00}%");
+                    if (action is not null) SendAction(action, source: null);
+                }
+                else
+                {
+                    DebugLog.Write(snapshot.Accuracy is null
+                        ? "结算了，但这一包没读到 accuracy → 不播"
+                        : $"结算 {snapshot.Accuracy:0.00}% 没有落在任何一档 → 不播（一共配了 {_config.ResultRanges.Count} 档）");
+                }
+            }
         }
         else if (modeChanged)
         {
@@ -868,7 +883,7 @@ public partial class OverlayWindow : Window
     /// <summary>
     /// 将一条“反应”发出去，来源可能为（连击/阈值/断连/区间->HandleEvent，还有触摸->广播）
     /// </summary>
-    /// <param name="action"> 触发“反应”必备</param>
+    /// <param name="action"> 触发,结算“反应”必备</param>
     /// <param name="source"> 可空，触摸不需要任何状态机</param>
     private void SendAction(TriggerAction action, ComboEvent? source)
     {
@@ -883,10 +898,10 @@ public partial class OverlayWindow : Window
                 {
                     TriggerActionKind.Combo => "combo",
                     TriggerActionKind.Miss => "miss",
-                    // ★ 触摸也发 "combo"：页面那边 case "combo" 干的事就是
-                    //   "播一次瞬时表情 + 动作 + 语音"，和触摸要的**一模一样**。
-                    //   新造一个 type 就得动 JS 那一侧，而这里没有任何新语义需要表达。
+                    //触摸，结算的反应组成跟combo是一样的
+                    //新造一个 type 就得动 JS 那一侧，而这里没有任何新语义需要表达。
                     TriggerActionKind.Touched => "combo",
+                    TriggerActionKind.Result => "combo",
                     _ => "steady"
                 },
                 expression = action.Expression,

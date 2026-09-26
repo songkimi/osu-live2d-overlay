@@ -44,6 +44,23 @@ public sealed class PluginConfig
     /// </summary>
     [JsonPropertyName("触摸")] public List<ReactionConfig> Touch { get; set; } = new List<ReactionConfig>();
 
+    /// <summary>
+    /// 结算反应：按**这一局的准确率**挑一条播（★ 2026-09-26）。
+    ///
+    /// **只在 `menu.state == 7`（结算）时才看它** —— 这不是保守，是抓包证实的硬要求：
+    /// 主菜单 / 选歌 / 打歌时 `resultsScreen.accuracy` 都是 **0**
+    /// （`gameplay.accuracy` 则是 **100**，两个都是假值）。照它匹配的话，
+    /// 一进主菜单 acc=0 就落进"0~80"那一档，角色会在主菜单开始演"考砸了"。
+    ///
+    /// 匹配规则：**第一个满足 `最小 &lt;= acc &lt; 最大` 的**（顺序有意义）。
+    /// `最大` 可空 = "以上不封顶"。
+    /// ⚠ **别用 100 当最后一档的上限** —— `100 &lt; 100` 不成立，满分会被自己的档位挡在外面。
+    /// 界面上那个"最大"输入框的上限也是 101，正是为了这个。
+    ///
+    /// **一条都不匹配 = 什么都不做**（不兜底、不猜）。
+    /// </summary>
+    [JsonPropertyName("结算反应")] public List<AccuracyRange> ResultRanges { get; set; } = new List<AccuracyRange>();
+
     
     /// <summary>
     /// 配置结构版本，为将来迁移用。
@@ -136,6 +153,12 @@ public sealed class PluginConfig
         // 手改 JSON 时可能写出 null 元素（`"触摸": [null]`）——
         // 挑到"什么都没有"的一条，表现就是"点了没反应"，所以直接扔掉。
         Touch.RemoveAll(reaction => reaction is null);
+
+        ResultRanges ??= new List<AccuracyRange>();
+
+        // 同上：null 元素会让"挑到了却没得播"，而且它还会在界面上显示成一个空卡片
+        ResultRanges.RemoveAll(range => range is null);
+        foreach (var range in ResultRanges) range.Reaction ??= new ReactionConfig();
 
         
         Scenes ??= BuildDefaultScenes();
@@ -244,6 +267,25 @@ public class ReactionConfig
     [JsonPropertyName("瞬时表情")] public string Expression { get; set; } = "";
     [JsonPropertyName("动作")] public string Action { get; set; } = "";
     [JsonPropertyName("语音情绪")] public string VoiceEmotion { get; set; } = "";
+}
+
+/// <summary>
+/// 结算反应的一档：准确率落在 <c>[最小, 最大)</c> 里时播什么。
+///
+/// 和 <see cref="ComboRanger"/> 是一对孪生兄弟（那边按连击数分段，这边按准确率），
+/// 只多一个「反应」三槽位 —— 因为它要能同时演表情、做动作、说话。
+/// </summary>
+public sealed class AccuracyRange
+{
+    [JsonPropertyName("最小")] public double Min { get; set; }
+
+    /// <summary>
+    /// 上界，**开区间**（`acc == 最大` 不算落在这一档）。
+    /// <c>null</c> = 以上不封顶。
+    /// </summary>
+    [JsonPropertyName("最大")] public double? Max { get; set; }
+
+    [JsonPropertyName("反应")] public ReactionConfig Reaction { get; set; } = new();
 }
 
 /// <summary>语音（与表情完全解耦的那一半：表情负责"演什么"，语音负责"说什么"）</summary>

@@ -25,7 +25,8 @@ public enum TriggerActionKind
     /// <summary>区间变化 → 页面消息 type = "steady"（常态表情）</summary>
     Steady,
     /// <summary>被触摸</summary>
-    Touched
+    Touched,
+    Result
 }
 
 /// <summary>一次要发给页面的动作</summary>
@@ -90,11 +91,26 @@ public static class TriggerResolver
 
         return actions;
     }
+    /// <summary>
+    /// 触摸时发送的动作
+    /// </summary>
+    /// <param name="reaction"></param>
+    /// <param name="note"></param>
+    /// <returns></returns>
     public static TriggerAction? ResolveTouch(ReactionConfig? reaction, string note)
     {
         if(reaction == null) return null;
         return Build(TriggerActionKind.Touched, reaction.Expression, reaction.Action, reaction.VoiceEmotion, note);
     }
+    /// <summary>
+    /// 结算界面的动作
+    /// </summary>
+    /// <param name="reaction"></param>
+    /// <param name="note"></param>
+    /// <returns></returns>
+    public static TriggerAction? ResolveResult(ReactionConfig? reaction, string note)
+    => reaction is null ? null
+       : Build(TriggerActionKind.Result, reaction.Expression, reaction.Action, reaction.VoiceEmotion, note);
 
     /// <summary>
     /// 统一收口：三个字段全空就不产出 —— 别给页面发一条什么都没说的消息。

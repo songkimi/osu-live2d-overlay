@@ -40,7 +40,8 @@ public readonly record struct TosuSnapshot(
     int? GameMode,
     double? Hp,
     int Combo,
-    int MaxCombo);
+    int MaxCombo,
+    double? Accuracy);      // ★ 2026-09-26：结算准确率（0~100）。非结算时 tosu 报 0，**用的时候必须限定 state==7**
 
 public static class TosuJsonParser
 {
@@ -92,7 +93,19 @@ public static class TosuJsonParser
                 }
             }
 
-            return new TosuSnapshot(menuState, gameMode, hp, combo, maxCombo);
+            // 结算准确率（★ 2026-09-26）—— **只从 resultsScreen 段读**。
+            //
+            // 为什么不用 gameplay.accuracy：抓包实测（2026-09-26，四个界面的包都看过）——
+            // 非结算时 `resultsScreen.accuracy` 是 **0**、而 `gameplay.accuracy` 是 **100**，
+            // 两个都是假值。这里只负责"老实读出来"，**什么时候能用是调用方的事**
+            // （靠 `menu.state == 7` 挡，见 Logic/ResultReaction.cs 的文件头）。
+            //
+            // **读不到给 null，不给 0** —— "这个字段不在"和"值是 0"是两回事。
+            double? accuracy = null;
+            if (root.TryGetProperty("resultsScreen", out var resultsEl))
+                accuracy = ReadDouble(resultsEl, "accuracy");
+
+            return new TosuSnapshot(menuState, gameMode, hp, combo, maxCombo, accuracy);
         }
     }
 

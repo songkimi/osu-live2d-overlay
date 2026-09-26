@@ -129,6 +129,7 @@ public static class ConfigHealthCheck
         CheckModel(config, env, issues);
         CheckVoice(config, env, issues);
         CheckRanges(config, issues, recoverable);
+        CheckResultRanges(config, issues, recoverable);
         CheckReferencedIds(config, env, issues, recoverable);
         CheckMiss(config, issues);
         CheckThresholds(config, issues);
@@ -230,6 +231,67 @@ public static class ConfigHealthCheck
                            $"常态区间[{indexA}]（{ra.Min}-{End(ra)}）和常态区间[{indexB}]（{rb.Min}-{End(rb)}）重叠，" +
                            $"重叠的那一段会用前一条（常态区间[{indexA}]），常态区间[{indexB}] 在那一段里用不到",
                            $"常态区间[{indexB}]"));
+        }
+    }
+
+    // ---------------- 结算反应：和常态区间同一套检查（只是数字是小数） ----------------
+
+    /// <summary>
+    /// 结算反应的档位检查：越界的档 + 重叠。
+    ///
+    /// 和 <see cref="CheckRanges"/> 是同一个形状，差别只有一个：**这里的数是小数**
+    ///（准确率 0~100）。`ComboTracker.FindOverlaps` 虽然泛型，但它要的是整数区间
+    /// （<c>Func&lt;T, ComboRange&gt;</c>），套不上，所以重叠那段在这儿重写了一遍 ——
+    /// **规则和它完全一致：重叠处运行时取前一条**（逐个比、命中就 break）。
+    ///
+    /// **刻意不报"档位之间有洞"**（用户 2026-09-26 定）：那是配置写法的选择，不是错误 ——
+    /// 有人就是想"90 分以下不表态"。空档的代价是"那一段成绩没有反应"，而那是他自己配的。
+    /// </summary>
+    private static void CheckResultRanges(PluginConfig config, List<HealthIssue> issues, HealthLevel level)
+    {
+        var ranges = config.ResultRanges;
+        if (ranges.Count == 0) return;
+
+        // 报告里别把哨兵值印成 1.7976931348623157E+308
+        static string End(AccuracyRange r) => r.Max is { } m ? m.ToString("0.##") : "以上";
+
+        for (var i = 0; i < ranges.Count; i++)
+        {
+            var r = ranges[i];
+
+            if (r.Min < 0 || r.Min > 100)
+                issues.Add(new(level,
+                               $"结算反应[{i + 1}] 的最小值（{r.Min:0.##}）不在 0~100 里 —— " +
+                               "准确率永远落不进这一档",
+                               $"结算反应[{i + 1}]"));
+
+            if (r.Max is not { } max) continue;
+
+            // 注意是 `>=` 而不是 `>`：匹配用的是**开区间 [Min, Max)**，
+            // 所以 Min == Max 这一档谁也收不到（连 Min 自己都收不到）。
+            if (r.Min >= max)
+                issues.Add(new(level,
+                               $"结算反应[{i + 1}] 的最小值（{r.Min:0.##}）不小于最大值（{max:0.##}），" +
+                               "这一档永远不会被用到",
+                               $"结算反应[{i + 1}]"));
+        }
+
+        for (var i = 0; i < ranges.Count; i++)
+        {
+            for (var j = i + 1; j < ranges.Count; j++)
+            {
+                var a = ranges[i];
+                var b = ranges[j];
+                var aMax = a.Max ?? double.MaxValue;
+                var bMax = b.Max ?? double.MaxValue;
+
+                if (a.Min > bMax || b.Min > aMax) continue;
+
+                issues.Add(new(level,
+                               $"结算反应[{i + 1}]（{a.Min:0.##}-{End(a)}）和结算反应[{j + 1}]（{b.Min:0.##}-{End(b)}）重叠，" +
+                               $"重叠的那一段会用前一条（结算反应[{i + 1}]），结算反应[{j + 1}] 在那一段里用不到",
+                               $"结算反应[{j + 1}]"));
+            }
         }
     }
 

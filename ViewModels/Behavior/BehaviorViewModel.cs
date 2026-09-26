@@ -135,10 +135,17 @@ public partial class BehaviorViewModel : ObservableObject
     /// </summary>
     public ObservableCollection<RuleCard> TouchCards { get; } = new();
 
+    /// <summary>
+    /// 结算反应：打完一局按**准确率**挑一条播（★ 2026-09-26）。
+    /// 挑哪一条的规则在 `ResultReaction.Pick`（纯逻辑、有穷举测试）。
+    /// </summary>
+    public ObservableCollection<RuleCard> ResultCards { get; } = new();
+
     public bool HasRanges => Ranges.Count > 0;
     public bool HasTriggers => Triggers.Count > 0;
     public bool HasPersistent => Persistent.Count > 0;
     public bool HasTouch => TouchCards.Count > 0;
+    public bool HasResult => ResultCards.Count > 0;
 
     /// <summary>底部保存栏的"● 未保存"和两个按钮都看它</summary>
     public bool HasUnsavedChanges => _store.IsDirty;
@@ -410,17 +417,22 @@ public partial class BehaviorViewModel : ObservableObject
         // 失误反应固定两档，所以是"编辑小额/大额"，没有新增
         RuleKind.Miss => _editIndex == 0 ? "编辑小额失误" : "编辑大额失误",
         RuleKind.Touch => _editIndex < 0 ? "新增触摸反应" : "编辑触摸反应",
+        RuleKind.Result => _editIndex < 0 ? "新增结算反应" : "编辑结算反应",
         _ => _editIndex < 0 ? "新增区间" : "编辑区间"
     };
 
-    /// <summary>那个数字框叫什么（三张卡片含义不同）</summary>
+    /// <summary>那个数字框叫什么（几张卡片含义不同）</summary>
     public string EditNumberLabel => _editKind switch
     {
         RuleKind.Trigger => "连击阈值",
         RuleKind.Miss => "门槛（连击）",
         RuleKind.Touch => "",          // 触摸没有数字，那一行整块不显示（见 HasNumberField）
+        RuleKind.Result => "最小准确率（%）",
         _ => "最小连击"
     };
+
+    /// <summary>「最大」那个框叫什么（区间按连击数分段，结算反应按准确率分段）</summary>
+    public string EditMaxLabel => _editKind == RuleKind.Result ? "最大准确率（%）" : "最大连击";
 
     /// <summary>是不是"区间"那种编辑（只有它有最大/以上这种字段）</summary>
     public bool IsRangeEdit => _editKind == RuleKind.Range;
@@ -433,8 +445,17 @@ public partial class BehaviorViewModel : ObservableObject
     /// </summary>
     public bool HasNumberField => _editKind != RuleKind.Touch;
 
-    /// <summary>要不要显示三个槽位（触发点 / 失误 / 触摸都是"反应"）</summary>
-    public bool IsReactionEdit => _editKind is RuleKind.Trigger or RuleKind.Miss or RuleKind.Touch;
+    /// <summary>
+    /// 有没有「最大」这一项（区间和结算反应有，它们都是 <c>[最小, 最大)</c> 的分段）。
+    ///
+    /// ⚠ **它和 <see cref="IsRangeEdit"/> 不是一回事，别合并**：
+    /// 结算反应**有**"最大"，但它的反应是**三槽位**（不是区间那种"只有一个表情"）。
+    /// 合并成一个开关的话，抽屉里就会给结算反应显示一个孤零零的"表情"下拉。
+    /// </summary>
+    public bool HasMaxField => _editKind is RuleKind.Range or RuleKind.Result;
+
+    /// <summary>要不要显示三个槽位（触发点 / 失误 / 触摸 / 结算都是"反应"）</summary>
+    public bool IsReactionEdit => _editKind is RuleKind.Trigger or RuleKind.Miss or RuleKind.Touch or RuleKind.Result;
 
     /// <summary>弹窗里的即时反馈（数值打错、保存出问题都在这里说）</summary>
     [ObservableProperty] private string _editError = "";
@@ -450,8 +471,8 @@ public partial class BehaviorViewModel : ObservableObject
     partial void OnEditMaxUnlimitedChanged(bool value) => OnPropertyChanged(nameof(EditMaxEnabled));
 
     /// <summary>编辑已有的那一条时才能删（新增的时候没有可删的）</summary>
-    /// <summary>能不能删：区间 / 触发点 / 触摸可以，**失误反应不行**（它就是固定两档，删掉没有意义）</summary>
-    public bool CanDelete => _editKind is RuleKind.Range or RuleKind.Trigger or RuleKind.Touch;
+    /// <summary>能不能删：区间 / 触发点 / 触摸 / 结算可以，**失误反应不行**（它就是固定两档，删掉没有意义）</summary>
+    public bool CanDelete => _editKind is RuleKind.Range or RuleKind.Trigger or RuleKind.Touch or RuleKind.Result;
 
     [RelayCommand]
     private void BeginNewRange()
@@ -494,6 +515,7 @@ public partial class BehaviorViewModel : ObservableObject
             case RuleKind.Trigger: SaveTriggerEdit(); break;
             case RuleKind.Miss: SaveMissEdit(); break;
             case RuleKind.Touch: SaveTouchEdit(); break;
+            case RuleKind.Result: SaveResultEdit(); break;
         }
     }
 
@@ -506,6 +528,7 @@ public partial class BehaviorViewModel : ObservableObject
             case RuleKind.Range: DeleteRangeEditing(); break;
             case RuleKind.Trigger: DeleteTriggerEditing(); break;
             case RuleKind.Touch: DeleteTouchEditing(); break;
+            case RuleKind.Result: DeleteResultEditing(); break;
             // Miss：**不给删**（固定两档）
         }
     }
@@ -604,6 +627,49 @@ public partial class BehaviorViewModel : ObservableObject
         AfterBegin();
     }
 
+    // ------------------------------------------------------------
+    // 结算反应（★ 2026-09-26）
+    //
+    // 它是「常态区间」和「触发点」的**合体**：
+    //   · 像区间   —— 有 最小/最大 两个数字（而且是**小数**，准确率不是整数）
+    //   · 像触发点 —— 反应是三槽位（表情 / 动作 / 语音）
+    //
+    // 所以抽屉里那两块的可见性必须用**两个独立开关**（HasMaxField 和 IsReactionEdit），
+    // **不能合并**：合并了就会给结算反应多显示一个孤零零的"表情"下拉
+    //（那是区间专用的单槽位）。
+    // ------------------------------------------------------------
+
+    [RelayCommand]
+    private void BeginNewResult()
+    {
+        _editIndex = -1;
+        _editKind = RuleKind.Result;
+        EditMinText = "0";
+        EditMaxText = "";
+        EditMaxUnlimited = true;
+        EditReactionExpression = "";
+        EditReactionAction = "";
+        EditReactionEmotion = "";
+        AfterBegin();
+    }
+
+    [RelayCommand]
+    private void BeginEditResult(RuleCard? card)
+    {
+        if (card is null || card.Index < 0 || card.Index >= _store.Config.ResultRanges.Count) return;
+
+        var range = _store.Config.ResultRanges[card.Index];
+        _editIndex = card.Index;
+        _editKind = RuleKind.Result;
+        EditMinText = range.Min.ToString("0.##");
+        EditMaxText = range.Max?.ToString("0.##") ?? "";
+        EditMaxUnlimited = range.Max is null;
+        EditReactionExpression = range.Reaction.Expression;
+        EditReactionAction = range.Reaction.Action;
+        EditReactionEmotion = range.Reaction.VoiceEmotion;
+        AfterBegin();
+    }
+
     /// <summary>打开弹窗的共同收尾（各 Begin 都要走一遍，免得漏了哪一处通知）</summary>
     private void AfterBegin()
     {
@@ -614,6 +680,8 @@ public partial class BehaviorViewModel : ObservableObject
         OnPropertyChanged(nameof(IsReactionEdit));
         OnPropertyChanged(nameof(CanDelete));
         OnPropertyChanged(nameof(HasNumberField));
+        OnPropertyChanged(nameof(HasMaxField));
+        OnPropertyChanged(nameof(EditMaxLabel));
         IsEditing = true;
     }
 
@@ -674,6 +742,29 @@ public partial class BehaviorViewModel : ObservableObject
         if (value < minimum)
         {
             EditError = $"{what}不能小于 {minimum}。";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 读一个**允许小数**的框（结算反应用）。
+    ///
+    /// 不能用上面那个 <c>TryReadNumber</c>：它是整数版（`int.TryParse`），
+    /// 而准确率是 0~100 的小数 —— 用户填个 `94.5` 会被它判成"要是个整数"。
+    /// </summary>
+    private bool TryReadDecimalField(string text, out double value, string what, double min, double max)
+    {
+        if (!double.TryParse(text.Trim(), out value))
+        {
+            EditError = $"{what}要是个数字（可以带小数）。";
+            return false;
+        }
+
+        if (value < min || value > max)
+        {
+            EditError = $"{what}要在 {min:0.##} ~ {max:0.##} 之间。";
             return false;
         }
 
@@ -753,6 +844,57 @@ public partial class BehaviorViewModel : ObservableObject
         if (_editIndex < 0 || _editIndex >= _store.Config.Touch.Count) return;
 
         _store.Config.Touch.RemoveAt(_editIndex);
+        FinishEdit("已删除，记得点保存");
+    }
+
+    /// <summary>结算反应：最小/最大都是准确率（小数），反应仍然是三槽位</summary>
+    private void SaveResultEdit()
+    {
+        // 上限给到 **101 而不是 100**：匹配是开区间 `[最小, 最大)`，
+        // 最后一档写成 `[95, 100)` 的话**满分 100 谁都收不到**（`100 < 100` 不成立）。
+        if (!TryReadDecimalField(EditMinText, out var min, "最小准确率", 0, 101)) return;
+
+        double? max = null;
+        if (!EditMaxUnlimited)
+        {
+            if (!TryReadDecimalField(EditMaxText, out var parsed, "最大准确率", 0, 101)) return;
+
+            if (parsed <= min)
+            {
+                EditError = "最大准确率要大于最小准确率（匹配是 [最小, 最大)，两边相等的话这一档收不到任何成绩）。";
+                return;
+            }
+
+            max = parsed;
+        }
+
+        var target = new AccuracyRange
+        {
+            Min = min,
+            Max = max,
+            Reaction = new ReactionConfig
+            {
+                Expression = (EditReactionExpression ?? "").Trim(),
+                Action = (EditReactionAction ?? "").Trim(),
+                VoiceEmotion = (EditReactionEmotion ?? "").Trim()
+            }
+        };
+
+        if (_editIndex < 0) _store.Config.ResultRanges.Add(target);
+        else _store.Config.ResultRanges[_editIndex] = target;
+
+        // 顺序有意义（运行时"第一个匹配的"胜出），按最小值排一下 —— 和区间同一个理由
+        _store.Config.ResultRanges.Sort((a, b) => a.Min.CompareTo(b.Min));
+
+        FinishEdit("已改动，记得点保存");
+    }
+
+    /// <summary>删除正在编辑的那一条结算反应</summary>
+    private void DeleteResultEditing()
+    {
+        if (_editIndex < 0 || _editIndex >= _store.Config.ResultRanges.Count) return;
+
+        _store.Config.ResultRanges.RemoveAt(_editIndex);
         FinishEdit("已删除，记得点保存");
     }
 
@@ -923,10 +1065,21 @@ public partial class BehaviorViewModel : ObservableObject
             TouchCards.Add(ReactionCard($"触摸 {i + 1}", _store.Config.Touch[i], catalog, available, emotions, i));
         }
 
+        ResultCards.Clear();
+        for (var i = 0; i < _store.Config.ResultRanges.Count; i++)
+        {
+            var r = _store.Config.ResultRanges[i];
+
+            // 表头就是它管的那段准确率：`90-95` / `95 以上`
+            var head = r.Max is { } max ? $"{r.Min:0.##}-{max:0.##}" : $"{r.Min:0.##} 以上";
+            ResultCards.Add(ReactionCard(head, r.Reaction, catalog, available, emotions, i));
+        }
+
         OnPropertyChanged(nameof(HasRanges));
         OnPropertyChanged(nameof(HasTriggers));
         OnPropertyChanged(nameof(HasPersistent));
         OnPropertyChanged(nameof(HasTouch));
+        OnPropertyChanged(nameof(HasResult));
     }
 
     /// <summary>带"反应"的小卡片（触发点 / 失误反应共用）：三个槽位依次是 表情 / 动作 / 情绪</summary>
@@ -1062,7 +1215,8 @@ public enum RuleKind
     Range,       // 常态区间
     Trigger,     // 触发点
     Miss,        // 失误反应（固定两档：只能改，不能增删）
-    Touch        // 触摸反应（被摸到就播，没有数字）
+    Touch,       // 触摸反应（被摸到就播，没有数字）
+    Result       // 结算反应（打完一局按准确率播；有小数区间，但反应是三槽位）
 }
 
 /// <summary>
