@@ -156,8 +156,14 @@ public partial class SceneSettingsViewModel : ObservableObject
     [ObservableProperty] private double _characterScale = 1.0;
     [ObservableProperty] private double _characterAngle;
 
-    /// <summary>允许触摸（P2 留位）—— 界面**置灰**，只显示不编辑</summary>
-    public bool TouchEnabled => Loaded().TouchEnabled;
+    /// <summary>
+    /// 允许触摸：这个界面能不能点角色。
+    ///
+    /// 点了之后从「行为 → 被摸到的时候」那段列表里随机挑一条播（★ 2026-09-26 接上）。
+    /// **它和"点击穿透"是两件事**：穿透决定鼠标能不能到这个界面（打歌永远穿透、点不到），
+    /// 这一项决定"能点到的时候，点角色要不要有反应"。
+    /// </summary>
+    [ObservableProperty] private bool _touchEnabled;
 
     /// <summary>打歌那一档的"按模式分站位"四行；别的界面是空的</summary>
     public ObservableCollection<ModePlacementRowViewModel> Modes { get; } = new();
@@ -226,12 +232,14 @@ public partial class SceneSettingsViewModel : ObservableObject
             CharacterScale = profile.Character.Scale;
             CharacterAngle = profile.Character.AngleDegrees;
 
+            TouchEnabled = profile.TouchEnabled;
+
             foreach (var row in Modes) row.Load(profile.ByMode);
         }
         finally { _loading = false; }
 
-        // IsPlaying 那一档的初值是从配置里现读的，"允许触摸"要跟着刷新
-        OnPropertyChanged(nameof(TouchEnabled));
+        // IsPlaying 那一档的初值是从配置里现读的，这几个派生属性要跟着刷新
+        // （TouchEnabled 不用 —— 它现在是 [ObservableProperty]，会自己通知）
         OnPropertyChanged(nameof(SizeWarning));
         OnPropertyChanged(nameof(HasSizeWarning));
     }
@@ -242,6 +250,7 @@ public partial class SceneSettingsViewModel : ObservableObject
         var profile = Loaded();
 
         profile.Enabled = Enabled;
+        profile.TouchEnabled = TouchEnabled;
 
         // 0 = "没设过" → 存 null（读取时才会退回"程序默认摆放"）。
         // 存 0 的话窗口会变成 0 宽，那是另一回事（看都看不见）。
@@ -277,6 +286,7 @@ public partial class SceneSettingsViewModel : ObservableObject
         => _store.Config.Scenes?.ApplyToUnconfigured(Scene);
 
     partial void OnEnabledChanged(bool value) => MarkDirty();
+    partial void OnTouchEnabledChanged(bool value) => MarkDirty();
 
     partial void OnWindowWidthChanged(double value) => SizeChanged();
     partial void OnWindowHeightChanged(double value) => SizeChanged();

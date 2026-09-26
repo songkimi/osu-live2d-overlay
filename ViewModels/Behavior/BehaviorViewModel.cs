@@ -128,9 +128,17 @@ public partial class BehaviorViewModel : ObservableObject
     /// <summary>常驻组件：列出模型里的表情，勾上的那几个一直挂着</summary>
     public ObservableCollection<PersistentCard> Persistent { get; } = new();
 
+    /// <summary>
+    /// 触摸反应：点一下角色，从里面**随机**挑一条播（★ 2026-09-26）。
+    /// 挑哪一条的规则在 `TouchReaction.Pick`（纯逻辑、有穷举测试）——
+    /// 这一页只管"把列表摆出来、能增删改"。
+    /// </summary>
+    public ObservableCollection<RuleCard> TouchCards { get; } = new();
+
     public bool HasRanges => Ranges.Count > 0;
     public bool HasTriggers => Triggers.Count > 0;
     public bool HasPersistent => Persistent.Count > 0;
+    public bool HasTouch => TouchCards.Count > 0;
 
     /// <summary>底部保存栏的"● 未保存"和两个按钮都看它</summary>
     public bool HasUnsavedChanges => _store.IsDirty;
@@ -401,6 +409,7 @@ public partial class BehaviorViewModel : ObservableObject
         RuleKind.Trigger => _editIndex < 0 ? "新增触发点" : "编辑触发点",
         // 失误反应固定两档，所以是"编辑小额/大额"，没有新增
         RuleKind.Miss => _editIndex == 0 ? "编辑小额失误" : "编辑大额失误",
+        RuleKind.Touch => _editIndex < 0 ? "新增触摸反应" : "编辑触摸反应",
         _ => _editIndex < 0 ? "新增区间" : "编辑区间"
     };
 
@@ -409,14 +418,23 @@ public partial class BehaviorViewModel : ObservableObject
     {
         RuleKind.Trigger => "连击阈值",
         RuleKind.Miss => "门槛（连击）",
+        RuleKind.Touch => "",          // 触摸没有数字，那一行整块不显示（见 HasNumberField）
         _ => "最小连击"
     };
 
     /// <summary>是不是"区间"那种编辑（只有它有最大/以上这种字段）</summary>
     public bool IsRangeEdit => _editKind == RuleKind.Range;
 
-    /// <summary>要不要显示三个槽位（触发点 / 失误都是"反应"）</summary>
-    public bool IsReactionEdit => _editKind is RuleKind.Trigger or RuleKind.Miss;
+    /// <summary>
+    /// 这一种规则要不要填数字。
+    ///
+    /// **触摸没有数字** —— 它不是"到了某个连击数才触发"，而是"被点到就播"。
+    /// 留着那个输入框，用户就得猜"这里该填什么"（而且填什么都不影响）。
+    /// </summary>
+    public bool HasNumberField => _editKind != RuleKind.Touch;
+
+    /// <summary>要不要显示三个槽位（触发点 / 失误 / 触摸都是"反应"）</summary>
+    public bool IsReactionEdit => _editKind is RuleKind.Trigger or RuleKind.Miss or RuleKind.Touch;
 
     /// <summary>弹窗里的即时反馈（数值打错、保存出问题都在这里说）</summary>
     [ObservableProperty] private string _editError = "";
@@ -432,8 +450,8 @@ public partial class BehaviorViewModel : ObservableObject
     partial void OnEditMaxUnlimitedChanged(bool value) => OnPropertyChanged(nameof(EditMaxEnabled));
 
     /// <summary>编辑已有的那一条时才能删（新增的时候没有可删的）</summary>
-    /// <summary>能不能删：区间和触发点可以，**失误反应不行**（它就是固定两档，删掉没有意义）</summary>
-    public bool CanDelete => _editKind is RuleKind.Range or RuleKind.Trigger;
+    /// <summary>能不能删：区间 / 触发点 / 触摸可以，**失误反应不行**（它就是固定两档，删掉没有意义）</summary>
+    public bool CanDelete => _editKind is RuleKind.Range or RuleKind.Trigger or RuleKind.Touch;
 
     [RelayCommand]
     private void BeginNewRange()
@@ -475,6 +493,7 @@ public partial class BehaviorViewModel : ObservableObject
             case RuleKind.Range: SaveRangeEdit(); break;
             case RuleKind.Trigger: SaveTriggerEdit(); break;
             case RuleKind.Miss: SaveMissEdit(); break;
+            case RuleKind.Touch: SaveTouchEdit(); break;
         }
     }
 
@@ -486,6 +505,7 @@ public partial class BehaviorViewModel : ObservableObject
         {
             case RuleKind.Range: DeleteRangeEditing(); break;
             case RuleKind.Trigger: DeleteTriggerEditing(); break;
+            case RuleKind.Touch: DeleteTouchEditing(); break;
             // Miss：**不给删**（固定两档）
         }
     }
@@ -549,6 +569,41 @@ public partial class BehaviorViewModel : ObservableObject
         AfterBegin();
     }
 
+    // ------------------------------------------------------------
+    // 触摸反应（★ 2026-09-26）
+    //
+    // 和触发点**同构，只少了那个数字** —— 它不是"到某个连击数才触发"，
+    // 而是"被点到就播"。所以编辑弹窗里那行数字要藏起来（见 HasNumberField）。
+    //
+    // 顺序**没有意义**（不像区间那样要排序、也不像触发点那样按阈值排）：
+    // 播哪一条是随机挑的，所以这里不做任何 Sort —— 排了反而会让用户以为"顺序有用"。
+    // ------------------------------------------------------------
+
+    [RelayCommand]
+    private void BeginNewTouch()
+    {
+        _editIndex = -1;
+        _editKind = RuleKind.Touch;
+        EditReactionExpression = "";
+        EditReactionAction = "";
+        EditReactionEmotion = "";
+        AfterBegin();
+    }
+
+    [RelayCommand]
+    private void BeginEditTouch(RuleCard? card)
+    {
+        if (card is null || card.Index < 0 || card.Index >= _store.Config.Touch.Count) return;
+
+        var reaction = _store.Config.Touch[card.Index];
+        _editIndex = card.Index;
+        _editKind = RuleKind.Touch;
+        EditReactionExpression = reaction.Expression;
+        EditReactionAction = reaction.Action;
+        EditReactionEmotion = reaction.VoiceEmotion;
+        AfterBegin();
+    }
+
     /// <summary>打开弹窗的共同收尾（各 Begin 都要走一遍，免得漏了哪一处通知）</summary>
     private void AfterBegin()
     {
@@ -558,6 +613,7 @@ public partial class BehaviorViewModel : ObservableObject
         OnPropertyChanged(nameof(IsRangeEdit));
         OnPropertyChanged(nameof(IsReactionEdit));
         OnPropertyChanged(nameof(CanDelete));
+        OnPropertyChanged(nameof(HasNumberField));
         IsEditing = true;
     }
 
@@ -673,6 +729,31 @@ public partial class BehaviorViewModel : ObservableObject
         }
 
         FinishEdit("已改动，记得点保存");
+    }
+
+    /// <summary>触摸反应：只有三个槽位，没有数字也不用排序</summary>
+    private void SaveTouchEdit()
+    {
+        var target = new ReactionConfig
+        {
+            Expression = (EditReactionExpression ?? "").Trim(),
+            Action = (EditReactionAction ?? "").Trim(),
+            VoiceEmotion = (EditReactionEmotion ?? "").Trim()
+        };
+
+        if (_editIndex < 0) _store.Config.Touch.Add(target);
+        else _store.Config.Touch[_editIndex] = target;
+
+        FinishEdit("已改动，记得点保存");
+    }
+
+    /// <summary>删除正在编辑的那一条触摸反应</summary>
+    private void DeleteTouchEditing()
+    {
+        if (_editIndex < 0 || _editIndex >= _store.Config.Touch.Count) return;
+
+        _store.Config.Touch.RemoveAt(_editIndex);
+        FinishEdit("已删除，记得点保存");
     }
 
     /// <summary>保存成功后的共同收尾</summary>
@@ -834,9 +915,18 @@ public partial class BehaviorViewModel : ObservableObject
                 onToggled: OnPersistentToggled));
         }
 
+        TouchCards.Clear();
+        for (var i = 0; i < _store.Config.Touch.Count; i++)
+        {
+            // 触摸没有"数字"可写进摘要，所以表头用序号 —— 只是给用户一个称呼，
+            // 不代表顺序有什么含义（播哪一条是随机的）
+            TouchCards.Add(ReactionCard($"触摸 {i + 1}", _store.Config.Touch[i], catalog, available, emotions, i));
+        }
+
         OnPropertyChanged(nameof(HasRanges));
         OnPropertyChanged(nameof(HasTriggers));
         OnPropertyChanged(nameof(HasPersistent));
+        OnPropertyChanged(nameof(HasTouch));
     }
 
     /// <summary>带"反应"的小卡片（触发点 / 失误反应共用）：三个槽位依次是 表情 / 动作 / 情绪</summary>
@@ -971,7 +1061,8 @@ public enum RuleKind
     None,
     Range,       // 常态区间
     Trigger,     // 触发点
-    Miss         // 失误反应（固定两档：只能改，不能增删）
+    Miss,        // 失误反应（固定两档：只能改，不能增删）
+    Touch        // 触摸反应（被摸到就播，没有数字）
 }
 
 /// <summary>

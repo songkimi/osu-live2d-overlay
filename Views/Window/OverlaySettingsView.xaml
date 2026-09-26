@@ -272,16 +272,12 @@
                                                            Style="{DynamicResource Text.Caption}" Margin="0,8,0,0" />
                                             </StackPanel>
 
-                                            <!-- 允许触摸（P2 留位） -->
+                                            <!-- 允许触摸 -->
                                             <StackPanel Style="{DynamicResource SettingRow}">
                                                 <TextBlock Text="允许触摸" Style="{DynamicResource Text.Body}" />
                                                 <ToggleButton Style="{DynamicResource ToggleSwitch}"
-                                                              IsChecked="{Binding TouchEnabled, Mode=OneWay}"
-                                                              IsEnabled="False"
+                                                              IsChecked="{Binding TouchEnabled}"
                                                               HorizontalAlignment="Left" Margin="0,6,0,0" />
-                                                <TextBlock Text="触摸反应还没做（P2）。这里先留位。"
-                                                           Foreground="{DynamicResource Brush.TextSecondary}"
-                                                           Style="{DynamicResource Text.Caption}" Margin="0,5,0,0" />
                                             </StackPanel>
 
                                             <!-- 只有「打歌」有：按模式分站位（决策 50） -->

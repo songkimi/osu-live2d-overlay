@@ -9,6 +9,8 @@
 // 职责边界：它只说"该发什么"，不负责"怎么发出去"。
 //   发消息、写日志、刷状态栏是 OverlayWindow.HandleEvent 的事。
 // ============================================================
+using System.Windows.Input;
+
 namespace OsuLive2dOverlay;
 
 /// <summary>要发给页面的动作类型（和页面的消息 type 一一对应）</summary>
@@ -21,7 +23,9 @@ public enum TriggerActionKind
     Miss,
 
     /// <summary>区间变化 → 页面消息 type = "steady"（常态表情）</summary>
-    Steady
+    Steady,
+    /// <summary>被触摸</summary>
+    Touched
 }
 
 /// <summary>一次要发给页面的动作</summary>
@@ -85,6 +89,11 @@ public static class TriggerResolver
         }
 
         return actions;
+    }
+    public static TriggerAction? ResolveTouch(ReactionConfig? reaction, string note)
+    {
+        if(reaction == null) return null;
+        return Build(TriggerActionKind.Touched, reaction.Expression, reaction.Action, reaction.VoiceEmotion, note);
     }
 
     /// <summary>

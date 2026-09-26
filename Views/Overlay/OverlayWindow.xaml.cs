@@ -264,6 +264,11 @@ public partial class OverlayWindow : Window
         // 为什么要单独一个窗口：本窗口里嵌着 WebView2（HwndHost），它会阻断所在区域的
         // WPF 命中测试 —— 在本窗口里放什么透明元素都接不到鼠标。
         _interaction = new InteractionWindow();
+        //触摸事件（见 OnTouched）
+        //必须要在影子窗口被创建的时候才订阅
+        //为了方便排查错误，不使用？来静默
+        _interaction.Touched += OnTouched;
+        DebugLog.Write("影子窗口：触摸事件已接上");
         _interaction.Dragged += OnInteractionDragged;
         _interaction.DragFinished += () =>
         {
@@ -858,39 +863,75 @@ public partial class OverlayWindow : Window
     private void HandleEvent(ComboEvent evt)
     {
         foreach (var action in TriggerResolver.Resolve(evt, _config))
+            SendAction(action, evt);
+    }
+    /// <summary>
+    /// 将一条“反应”发出去，来源可能为（连击/阈值/断连/区间->HandleEvent，还有触摸->广播）
+    /// </summary>
+    /// <param name="action"> 触发“反应”必备</param>
+    /// <param name="source"> 可空，触摸不需要任何状态机</param>
+    private void SendAction(TriggerAction action, ComboEvent? source)
+    {
+        var combo = source?.Combo ?? 0;
+        var step = source?.Level ?? 0;
+        var threshold = source?.Threshold ?? 0;
+        if (!string.IsNullOrWhiteSpace(action.Expression))
         {
-            if (!string.IsNullOrWhiteSpace(action.Expression))
+            SendJson(new
             {
-                SendJson(new
+                type = action.Kind switch
                 {
-                    type = action.Kind switch
-                    {
-                        TriggerActionKind.Combo => "combo",
-                        TriggerActionKind.Miss  => "miss",
-                        _                       => "steady"      // 区间变化 → 常态表情
-                    },
-                    expression = action.Expression,
-                    // 这个表情要改哪些参数 —— 页面拿到就能直接往模型上写，不用自己去读文件。
-                    // （@ 只是把 C# 关键字 params 当普通标识符用，序列化出来是 "params"）
-                    @params = _catalog.ParametersOf(action.Expression),
-                    combo = evt.Combo,
-                    step = evt.Level,
-                    threshold = evt.Threshold
-                });
-            }
-
-            // 动作（motion）单独一条消息：页面收到就播一次（`case "motion"`）。
-            // 和表情完全解耦 —— 表情没播出来，动作照样做
-            if (!string.IsNullOrWhiteSpace(action.Action))
-                SendJson(new { type = "motion", action = action.Action, reason = action.Note });
-
-            // 语音也是独立的一条：表情没播出来语音照样说（这就是"解耦"落在代码上的样子）
-            if (!string.IsNullOrWhiteSpace(action.Emotion))
-                SendJson(new { type = "voice", emotion = action.Emotion, reason = action.Note, combo = evt.Combo });
-
-            DebugLog.Write(action.Note +
-                           $" → 表情「{action.Expression}」动作「{action.Action}」语音「{action.Emotion}」");
+                    TriggerActionKind.Combo => "combo",
+                    TriggerActionKind.Miss => "miss",
+                    // ★ 触摸也发 "combo"：页面那边 case "combo" 干的事就是
+                    //   "播一次瞬时表情 + 动作 + 语音"，和触摸要的**一模一样**。
+                    //   新造一个 type 就得动 JS 那一侧，而这里没有任何新语义需要表达。
+                    TriggerActionKind.Touched => "combo",
+                    _ => "steady"
+                },
+                expression = action.Expression,
+                @params = _catalog.ParametersOf(action.Expression),
+                combo,
+                step,
+                threshold
+            });
         }
+        if (!string.IsNullOrWhiteSpace(action.Action))
+            SendJson(new { type = "motion", action = action.Action, reason = action.Note });
+
+        if (!string.IsNullOrWhiteSpace(action.Emotion))
+            SendJson(new { type = "voice", emotion = action.Emotion, reason = action.Note, combo });
+
+        DebugLog.Write(action.Note +
+                       $" → 表情「{action.Expression}」动作「{action.Action}」语音「{action.Emotion}」");
+    }
+
+    // ---------------- 运行期触摸行为 -------------------
+    /// <summary>
+    /// 用户在角色身上点了一下（按下到抬起都没移动过）。
+    ///
+    ///  两道门：
+    ///   ① 影子窗口只在"不穿透"的界面才显示（见 ShouldInteract）
+    ///   ② 这个界面还要开着「允许触摸」
+    /// 过了门才摇一个数、挑一条反应。
+    /// </summary>
+    private void OnTouched()
+    {
+        var profile = _scenes.Get(_sceneTracker.Current);
+        if (profile == null) return;
+        if (profile.TouchEnabled != true)
+        {
+            DebugLog.Write("被摸了一下，但这个界面没开「允许触摸」→ 忽略");
+            return;
+        }
+        var picked = TouchReaction.Pick(_config.Touch, Random.Shared.Next());
+        if (picked is null)
+        {
+            DebugLog.Write("被摸了一下，但「触摸」列表是空的 → 忽略");
+            return;
+        }
+        var action = TriggerResolver.ResolveTouch(picked, "被摸了一下");
+        if (action is not null) SendAction(action, source: null);
     }
 
     // ---------------- 运行期拖动窗口（由影子窗口转发过来） ----------------
@@ -998,22 +1039,7 @@ public partial class OverlayWindow : Window
         else if (Math.Abs(maxTop - Top) < snapDistance) Top = maxTop;
     }
 
-    // ---------------- 状态提示：**已撤掉** ----------------
-    //
-    // ★ 2026-09-23（用户要求："现在有日志了，可以取消掉悬浮窗的弹幕提示了"）
-    //
-    //   原来这里有个 `ShowStatus(text, autoHide)`，把一句话同时送到两处：
-    //     ① WPF 的状态条 —— 其实**基本看不见**（WebView2 是原生窗口，会盖住 WPF 元素，
-    //        只有调整模式把页面藏起来时它才露出来）；
-    //     ② 发给页面，由页面在**底部弹一条半透明的横条** —— 运行时真正看得见的其实是这一条。
-    //   现在两个都不发了，**只留下日志**：所有原来走 ShowStatus 的话都改成
-    //   `DebugLog.Write(...)`，内容一条没丢。
-    //
-    //   为什么撤：① 悬浮窗盖在游戏上，任何文字都是挡视线；
-    //             ② 日志（设置界面「日志」页 + 调试模式的日志文件）信息更全，而且**能回溯**；
-    //             ③ 出了问题该看的地方是「日志」和「配置体检」，不是让角色旁边飘一行字。
-    //   唯一"屏幕上本来什么都没有"的情况（模型没加载出来）由**页面**报 `fatal`，
-    //   设置界面的预览区会把它显示在自己那个提示行上 —— 那是用户正看着的窗口。
+    
 
     // ---------------- 运行模式 / 调整模式 ----------------
 

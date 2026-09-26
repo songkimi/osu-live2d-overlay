@@ -26,6 +26,24 @@ public sealed class PluginConfig
     [JsonPropertyName("口型")] public MouthConfig Mouth { get; set; } = new();
     [JsonPropertyName("表现")] public PerformanceConfig Performance { get; set; } = new PerformanceConfig();
 
+    /// <summary>
+    /// 被摸到的时候播什么（★ 2026-09-25 新增）。
+    ///
+    /// **一个列表**：点一下角色，从里面随机挑一条播。
+    /// 每一条就是一个 <see cref="ReactionConfig"/>（瞬时表情 / 动作 / 语音情绪）——
+    /// 和「连击触发」「失误反应」用的是同一个类型，所以界面控件与播放那条链都是现成的。
+    ///
+    /// **它和「允许触摸」是两件事，别混**：
+    ///   · 「允许触摸」在每个界面的档位里（`界面感知.选歌.允许触摸`）—— 管**哪些界面能点**
+    ///   · 这一段是全局的 —— 管**点到了播什么**
+    ///   两个都满足才会响。（打歌界面本来就是穿透的，鼠标根本到不了，所以永远点不到。）
+    ///
+    /// **为什么是"随机挑"而不是"按顺序轮"**：用户点它就是想逗一下，每次播同一个会显得死。
+    /// 代价是连点两次可能挑到同一条 —— 要避免得记住"上一次"，那就不纯了
+    /// （先不做，真觉得别扭再说）。
+    /// </summary>
+    [JsonPropertyName("触摸")] public List<ReactionConfig> Touch { get; set; } = new List<ReactionConfig>();
+
     
     /// <summary>
     /// 配置结构版本，为将来迁移用。
@@ -112,6 +130,12 @@ public sealed class PluginConfig
         Voice.Emotions ??= new List<string>();
 
         foreach (var trigger in ComboTriggers) trigger.Reaction ??= new ReactionConfig();
+
+        Touch ??= new List<ReactionConfig>();
+
+        // 手改 JSON 时可能写出 null 元素（`"触摸": [null]`）——
+        // 挑到"什么都没有"的一条，表现就是"点了没反应"，所以直接扔掉。
+        Touch.RemoveAll(reaction => reaction is null);
 
         
         Scenes ??= BuildDefaultScenes();

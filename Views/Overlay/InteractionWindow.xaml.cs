@@ -38,6 +38,10 @@ public partial class InteractionWindow : Window
     /// 拖动过程中实时吸会让窗口"粘"在半路、和鼠标脱节，手感很怪。
     /// </summary>
     public event Action? DragFinished;
+    /// <summary>
+    /// 仅仅触摸屏幕时触发
+    /// </summary>
+    public event Action? Touched;
 
     private Point _lastScreen;      // 上一次的**屏幕**坐标
     private bool _dragging;
@@ -92,6 +96,8 @@ public partial class InteractionWindow : Window
         _dragging = false;
         ReleaseMouseCapture();
 
-        if (wasDragging && _moved) DragFinished?.Invoke();
+        if (!wasDragging) return;
+        if (_moved) DragFinished?.Invoke();
+        else Touched?.Invoke();
     }
 }
