@@ -267,8 +267,15 @@ public partial class LogViewModel : ObservableObject
             "== 配置摘要（不含隐私内容）==",
             $"模型目录存在：{(!string.IsNullOrWhiteSpace(config.Model.Directory) && Directory.Exists(config.Model.Directory))}",
             $"模型入口：{config.Model.Entry}",
+            // ★ 2026-09-26 补全：这一份是**导出给人/给 agent 排查用的**，少一项就多一轮来回。
+            //   原来只有"常态区间 / 连击触发"两条 —— 连失误反应、常驻组件都没列，
+            //   触摸和结算是后加的卡片，更没跟上。
             $"常态区间条数：{config.Ranges.Count}",
             $"连击触发条数：{config.ComboTriggers.Count}",
+            $"失误反应：小额 {config.Miss.SmallThreshold} / 大额 {config.Miss.BigThreshold}",
+            $"触摸反应条数：{config.Touch.Count}",
+            $"结算反应条数：{config.ResultRanges.Count}",
+            $"常驻组件数：{config.PersistentParts.Count}",
             $"语音启用：{config.Voice.Enabled}",
             $"语音情绪数：{config.Voice.Emotions.Count}",
             $"界面感知：{(config.Scenes is null ? "无" : "有")}",

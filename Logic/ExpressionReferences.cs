@@ -90,6 +90,21 @@ public static class ExpressionReferences
         // ⑤ 待机动作：动作**组名**
         Take(ReferenceKind.Motion, config.Model.IdleGroup, "待机动作");
 
+        // ⑥ 触摸反应
+        for (var i = 0; i < config.Touch.Count; i++)
+            TakeReaction(config.Touch[i], $"触摸反应[{i + 1}]");
+
+        // ⑦ 结算反应
+        for (var i = 0; i < config.ResultRanges.Count; i++)
+        {
+            var range = config.ResultRanges[i];
+            var span = range.Max is null
+                ? $"{range.Min:0.##} 以上"
+                : $"{range.Min:0.##}~{range.Max.Value:0.##}";
+
+            TakeReaction(range.Reaction, $"结算反应[{i + 1}]（{span}）");
+        }
+
         return sites;
     }
 

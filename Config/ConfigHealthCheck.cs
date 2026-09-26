@@ -79,7 +79,6 @@ public sealed record HealthEnvironment(
     IReadOnlySet<string> KnownMotionIds,
     IReadOnlyDictionary<string, int> VoiceEmotionFileCounts,
     // ★ 2026-09-23 新增（第 21 条要用）。**带默认值**是有意的：
-    //   这份 record 的构造点散在练习与验证工程里，多一个必填参数会一次打破好几处，
     //   而"没探测过"与"不存在"在这里的处理是一样的（不传 dataSource 就不查那一条）。
     bool TosuExeExists = false,
     bool OsuExeExists = false);
@@ -114,7 +113,6 @@ public static class ConfigHealthCheck
     ///
     /// 传 null = 不查数据源那一条 —— 这是**故意留的口子**：
     /// 数据源不在档案里（它跟着 settings.json 走，不随角色切换），
-    /// 而这份 record 的调用点散在练习与验证工程里，加一个必填参数会一次打破好几处。
     /// 带默认值之后，老调用点一个字都不用改，而"要不要连数据源一起查"由调用方说了算。
     /// </param>
     public static IReadOnlyList<HealthIssue> Check(
@@ -267,8 +265,6 @@ public static class ConfigHealthCheck
 
             if (r.Max is not { } max) continue;
 
-            // 注意是 `>=` 而不是 `>`：匹配用的是**开区间 [Min, Max)**，
-            // 所以 Min == Max 这一档谁也收不到（连 Min 自己都收不到）。
             if (r.Min >= max)
                 issues.Add(new(level,
                                $"结算反应[{i + 1}] 的最小值（{r.Min:0.##}）不小于最大值（{max:0.##}），" +
@@ -285,7 +281,11 @@ public static class ConfigHealthCheck
                 var aMax = a.Max ?? double.MaxValue;
                 var bMax = b.Max ?? double.MaxValue;
 
-                if (a.Min > bMax || b.Min > aMax) continue;
+                // ★ **开区间**：`[a.Min, a.Max)` 和 `[b.Min, b.Max)` 重叠的判据是
+                //     `a.Min < b.Max && b.Min < a.Max` —— **两边相等不算重叠**。
+                //   所以 `[90,95)` 和 `[95,101)` 是**首尾相接、不重叠**的，
+                //   而"首尾相接"恰好是推荐的配法（相邻档之间不留空隙）。
+                if (a.Min >= bMax || b.Min >= aMax) continue;
 
                 issues.Add(new(level,
                                $"结算反应[{i + 1}]（{a.Min:0.##}-{End(a)}）和结算反应[{j + 1}]（{b.Min:0.##}-{End(b)}）重叠，" +
@@ -332,6 +332,15 @@ public static class ConfigHealthCheck
 
         yield return new(config.Miss.SmallReaction?.Expression ?? "", "失误（小额）", "失误触发.小额反应.瞬时表情");
         yield return new(config.Miss.BigReaction?.Expression ?? "", "失误（大额）", "失误触发.大额反应.瞬时表情");
+
+        
+        for (var i = 0; i < config.Touch.Count; i++)
+            yield return new(config.Touch[i]?.Expression ?? "",
+                             $"触摸反应[{i + 1}] ", $"触摸[{i + 1}].反应.瞬时表情");
+
+        for (var i = 0; i < config.ResultRanges.Count; i++)
+            yield return new(config.ResultRanges[i].Reaction?.Expression ?? "",
+                             $"结算反应[{i + 1}] ", $"结算反应[{i + 1}].反应.瞬时表情");
     }
 
     /// <summary>配置里所有引用"动作标识"的位置</summary>
@@ -348,6 +357,14 @@ public static class ConfigHealthCheck
 
         yield return new(config.Miss.SmallReaction?.Action ?? "", "失误（小额）", "失误触发.小额反应.动作");
         yield return new(config.Miss.BigReaction?.Action ?? "", "失误（大额）", "失误触发.大额反应.动作");
+
+        for (var i = 0; i < config.Touch.Count; i++)
+            yield return new(config.Touch[i]?.Action ?? "",
+                             $"触摸反应[{i + 1}] ", $"触摸[{i + 1}].反应.动作");
+
+        for (var i = 0; i < config.ResultRanges.Count; i++)
+            yield return new(config.ResultRanges[i].Reaction?.Action ?? "",
+                             $"结算反应[{i + 1}] ", $"结算反应[{i + 1}].反应.动作");
     }
 
     // ---------------- 失误门槛：配反了那一档就永远用不到 ----------------
@@ -438,12 +455,6 @@ public static class ConfigHealthCheck
                            "四个界面都没启用，角色永远不会显示",
                            "界面感知"));
 
-        // 2026-09-20 删掉了一条规则：「某界面启用了但没选模型」。
-        // 它检查的 `界面感知.{界面}.模型` 已经不存在了 —— 悬浮窗显示的**始终是**
-        // 全局 `模型{}` 那一个，"每界面一个模型"从来没有实现过。
-        // 那条规则唯一的作用是给手改过的配置发一个**假警报**：
-        // 启用=真、模型=空 → 报"这一档不显示角色"，而角色其实好好地在那儿。
-        // "有没有模型"是全局的事，上面 `模型.目录` / `模型.入口` 两条已经在管。
 
         // 打歌时必须穿透：不然悬浮窗会把鼠标从 osu 手里抢走，直接打不了
         if (scenes.Playing.Enabled && !scenes.Playing.Window.ClickThrough)
